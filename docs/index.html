@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Semantic Notebook</title>
+<style>
+  body{margin:0;background:#0a141d;color:#cdd9e3;
+    font-family:ui-monospace,Menlo,Consolas,monospace;display:flex;
+    align-items:center;justify-content:center;min-height:100vh;}
+  .boot{text-align:center;max-width:420px;padding:30px;}
+  .boot h1{font-size:14px;letter-spacing:.22em;text-transform:uppercase;
+    color:#39a9c0;font-weight:600;}
+  .boot p{font-size:12.5px;line-height:1.7;color:#7e93a4;}
+  .bar{height:3px;background:#16273a;border-radius:3px;overflow:hidden;
+    margin-top:18px;}
+  .bar i{display:block;height:100%;width:30%;background:#39a9c0;
+    border-radius:3px;animation:sl 1.2s ease-in-out infinite alternate;}
+  @keyframes sl{from{margin-left:0}to{margin-left:70%}}
+</style>
+</head>
+<body>
+<div class="boot" id="boot">
+  <h1>semantic notebook</h1>
+  <p id="bootmsg">Loading the Python runtime (first visit only takes a
+  few seconds)&#8230;</p>
+  <div class="bar"><i></i></div>
+</div>
+<script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+<script>
+(async function(){
+  var msg=document.getElementById('bootmsg');
+  function say(t){if(msg) msg.textContent=t;}
+  try{
+    var py=await loadPyodide();
+    say('Loading the renderer…');
+    var src=await (await fetch('semantic_render.py')).text();
+    py.FS.writeFile('semantic_render.py',src);
+    py.runPython('import semantic_render as sr');
+    var page=py.runPython('sr.render_page([], mode="web")');
+    document.open();document.write(page);document.close();
+    window.semPy={
+      parse:function(name,text,taken){
+        py.globals.set('_wname',String(name));
+        py.globals.set('_wtext',text);
+        py.globals.set('_wtaken',JSON.stringify(taken||[]));
+        return py.runPython('sr.web_parse(_wname,_wtext,_wtaken)');
+      }
+    };
+    document.dispatchEvent(new Event('sem:pyready'));
+  }catch(e){
+    say('Failed to start: '+(e&&e.message?e.message:e)
+      +' — check your connection and reload.');
+  }
+})();
+</script>
+</body>
+</html>

@@ -12,24 +12,66 @@ Dataset → Transform → Diagnostic → Figure → Interpretation
 sections in a navigable rail, and a live **provenance graph** of how each
 diagnostic derives from the data.
 
-It is a **static** renderer: no kernel, no server, no re-execution. Run your
-notebook once, normally, in Jupyter; the renderer reads the outputs already
-stored in the `.ipynb`. The result is a single self-contained `.html` file you
-can open in any browser or email to a collaborator.
+There is no kernel and no re-execution: run your notebook once, normally, in
+Jupyter; the renderer reads the outputs already stored in the `.ipynb`. Only
+dependency is the Python standard library.
 
 ---
 
-## Run it
+## Run it — the app (recommended)
 
 ```bash
-# 1. run your notebook in Jupyter so outputs are saved, then:
-python semantic_render.py my_notebook.ipynb
-
-# writes my_notebook.html next to it. Or choose the output / title:
-python semantic_render.py my_notebook.ipynb -o report.html --title "Run 42"
+python semantic_render.py
 ```
 
-Only dependency is the Python standard library. Open the example to see it:
+launches a small local server and opens the **semantic notebook app** in your
+browser. The layout is IDE-style: a **controls bar** on top (**+ Open**
+and the global Hide/Show filters, left-aligned), the **notebook tabs**
+beneath it, and a vertical **presentations rail** down the left edge.
+
+- **+ Open** (controls bar, top left) browses your file system; or just
+  **drag-and-drop `.ipynb` files** anywhere onto the window — or paste a
+  **URL** into the open dialog (GitHub `blob` links are converted to raw
+  automatically). URL notebooks reload with ↻ and come back on restart.
+- Every notebook opens as a **tab**. Click to switch, **↻** re-reads a
+  notebook from disk after you re-run it in Jupyter, **✕** closes it.
+- The **presentations rail** (left edge) stacks your presentations
+  vertically under a **Documents** button. Exactly one item is active at a
+  time: click a ▶ presentation to open it in the builder, click
+  **Documents** to go back — that button is always visible, so there is
+  always an obvious way out (`Esc` and the builder's **✕ Close** work
+  too). **New** starts a presentation; unsaved drafts carry an amber dot
+  and stay listed while you work on others. **«** collapses the rail to
+  icons, and again to hide it completely — a small **»** handle at the
+  bottom-left brings it back. While the builder is docked, notebook tabs
+  keep working — switch tabs to pull cards from different notebooks into
+  the same deck.
+- Open tabs and recent files are remembered in `semantic_project.json` next to
+  where you launched the app — restart later and your workspace comes back.
+- Presentations can **mix cards from every open tab** (see below) and save
+  into the same project file.
+
+Options: preload tabs with `python semantic_render.py --app A.ipynb B.ipynb`;
+choose the project folder with `--root`, the port with `--port`, and skip the
+auto-opened browser with `--no-browser`. The server binds to `127.0.0.1` only
+and the URL carries a session token.
+
+## Run it — static export
+
+For a shareable, self-contained page (no server needed to view it):
+
+```bash
+# one notebook -> my_notebook.html next to it
+python semantic_render.py my_notebook.ipynb
+
+# choose output / title
+python semantic_render.py my_notebook.ipynb -o report.html --title "Run 42"
+
+# several notebooks -> ONE page with tabs (default: semantic_view.html)
+python semantic_render.py part1.ipynb part2.ipynb -o project.html
+```
+
+Open the example to see it:
 
 ```bash
 python semantic_render.py example_climate_analysis.ipynb
@@ -44,6 +86,54 @@ python make_example_notebook.py
 jupyter execute example_climate_analysis.ipynb   # or run it in Jupyter
 python semantic_render.py example_climate_analysis.ipynb
 ```
+
+---
+
+## Publish it — the hosted web version
+
+The tool ships as a **fully client-side web app**: the same single Python
+file runs *in the visitor's browser* via [Pyodide](https://pyodide.org)
+(Python compiled to WebAssembly). There is no backend at all, which means
+free static hosting, nothing to maintain, and — the important part for
+science — **notebooks are never uploaded anywhere**; files people open
+stay on their machine.
+
+```bash
+python semantic_render.py --build-web docs
+```
+
+writes `docs/index.html` + `docs/semantic_render.py`. To publish on
+GitHub Pages:
+
+1. Commit the `docs/` folder and push.
+2. On GitHub: *Settings → Pages → Source: Deploy from a branch →*
+   `main` */docs*.
+3. Your tool is live at `https://<you>.github.io/<repo>/`.
+
+(Any static host works — Netlify, Cloudflare Pages, a plain web server.)
+The web version supports drag-and-drop, a file picker, and opening
+notebooks by URL; presentations autosave as browser drafts and can be
+downloaded as JSON or saved into a notebook via the file picker. The
+build bundles the example notebook, so first-time visitors get a
+**Try the example notebook** button, and every mode has a **Help**
+overlay covering the directives and everything the tool can do. The
+first visit downloads the Python runtime (a few MB, then cached).
+
+**Do not deploy the local app server (`--app`) to a public machine** —
+it is deliberately single-user: it binds to `127.0.0.1` and browses the
+host's filesystem. The web build above is the safe public face; the app
+server is for your own machine.
+
+### Install as a command
+
+The repo is pip-installable (`pyproject.toml` included):
+
+```bash
+pip install .            # or: pipx install .
+semantic-render          # launches the app from anywhere
+```
+
+The Jupyter widget extras come with `pip install ".[widget]"`.
 
 ---
 
@@ -227,49 +317,66 @@ graph with `id` / `depends`.
 - **Figure stage** — each diagnostic as a card: title, output, serif caption,
   amber `derives from …` provenance chips (click to jump to a source), and a
   collapsible code block.
-- **Toolbar** — **Docs** and **Presentation mode** are the two view
-  buttons, always top-right; the one you are in shows as selected.
-  Beside them, three standalone buttons whose labels follow the state:
-  *Hide/Show figures*, *Hide/Show markup* (the markdown/equation cells)
-  and *Hide/Show code* (code, dataset and metric cards). Any combination
-  works — hide code for a figures-plus-documentation reading view, leave
-  only markup for just the prose. A hidden card collapses to a slim
-  dashed stub that expands in place when clicked, so nothing is ever
-  more than a click away.
+- **Controls bar** (top row, global — it applies to every tab) — three
+  buttons whose labels follow the state: *Hide/Show figures*, *Hide/Show
+  markup* (the markdown/equation cells) and *Hide/Show code*. **Show
+  code shows ALL code**: it reveals the code-only cards *and* unfolds the
+  code tucked under every figure and dataset card in one click. Any
+  combination works — hide code for a figures-plus-documentation reading
+  view, leave only markup for just the prose. A hidden card collapses to
+  a slim dashed stub that expands in place when clicked.
+- **Raw notebook** (controls bar) — flips the active tab to the notebook
+  exactly as authored: every cell in order, `#|` directives visible,
+  outputs underneath. This is the transparency view — it shows precisely
+  where each card's title, caption and section came from. Click again
+  (or any nav link) to return to the formatted view.
+- **Notebook tabs** (beneath the controls) — one per open notebook.
+- **Presentations rail** (left edge, vertical) — a **Documents** button on
+  top, then your presentations; the active item is highlighted.
 - Responsive to mobile, keyboard-navigable, respects reduced-motion.
 
 ---
 
 ## Presentation deck
 
-**Presentation mode** works like PowerPoint: it opens the **builder**
-(below), and the **&#9654; Present** button at the top of the panel plays
-the deck full-screen — arrow buttons / arrow keys to move, `Esc` or
-**&#10005; Exit** to drop back to the builder, **Docs** to leave
-altogether. With nothing saved yet you get *auto: figures* — one
-full-screen slide per figure, in document order, each with its caption
-and a **Show code** drawer underneath.
+Click a **▶ presentation** in the left rail to open that deck in the
+**builder** (below); the **&#9654; Present** button at the top of the
+panel plays the deck full-screen — arrow buttons / arrow keys to move,
+`Esc` or **&#10005; Exit** to drop back to the builder, **Docs** to
+leave altogether. The rail's **Documents** button returns to the
+documents from anywhere. With nothing saved yet you get *auto: figures*
+— one full-screen slide per figure, in document order.
 
-The drawer tells the figure's whole computational story, not just its
-plotting call: every upstream card is a collapsible subheaded section in
-execution order — *open data → regrid → statistics → this figure* — with
-the upstream steps folded and the figure's own code open.
-The chain is the union of your declared `depends:` edges and **automatic
-variable tracing**: the renderer parses each cell's code and links a
-figure to whichever cells last assigned the variables it reads, so even
-un-annotated notebooks get the full lineage. (Static best-effort: it
-can't see mutation without assignment, e.g. `ds.load()`; declare
-`depends:` where the trace misses something.)
+**The deck has two axes.** Horizontal (←/→) is your story. Vertical is
+the **code trail**: on any slide whose frames carry code, a ↓ arrow
+(and *"↓ how it was made"* hint) appears — press it (or `ArrowDown`)
+to descend through every cell that produced what's on screen, one cell
+per step, in execution order: *open data → transforms → the plot
+itself*. ↑ climbs back; `Esc` returns to the slide; ←/→ leave the
+trail and continue the story. The counter shows where you are
+(`3 / 8 · code 2 / 5`).
+
+The trail is the union of your declared `depends:` edges and
+**automatic variable tracing**: the renderer parses each cell's code
+and links a figure to whichever cells last assigned the variables it
+reads, so even un-annotated notebooks get the full lineage. (Static
+best-effort: it can't see mutation without assignment, e.g.
+`ds.load()`; declare `depends:` where the trace misses something.)
 
 ### Create mode
 
-The builder docks on the left with the real document view beside it —
-toolbar, filters and all. **&#9654; Present** at the top plays the deck;
-the top-right **Docs** button exits back to the document. You build
-slides by pointing at the document:
+The builder docks full-height beside the presentations rail with the
+real document view next to it — the tab row and filters shift right to
+sit above the document. **&#9654; Present** at the top plays the deck;
+**Documents** in the rail (or `Esc`, or **✕ Close**) exits back to the
+documents. You build slides by pointing at the document:
 
-- **+ Add slide**, then pick a layout: **Full**, **Halves** or
-  **Quarters**.
+- **+ Add slide**, then pick a layout from the diagram buttons:
+  **full**, **halves** (side by side), **rows** (stacked), **quarters**,
+  a **title slide**, or a **blank canvas** (dashed icon) that you compose
+  entirely in ✎ Edit with text, arrows, boxes and notebook cells.
+  Title/subtitle can be typed in the panel or — in ✎ Edit — right on the
+  slide, where they are movable text objects like everything else.
 - Click a pane in the layout diagram, then **click a card in the
   document** to place it there; the next empty pane is selected
   automatically, and ✕ on a pane clears it. Figure panes show a faint
@@ -277,6 +384,22 @@ slides by pointing at the document:
 - The filmstrip shows PowerPoint-style thumbnails of every slide with the
   actual content — scaled-down figures, text stripes for markup — click
   to select, ↑ ↓ to reorder, ✕ to delete.
+- **✎ Edit slide** opens the slide in the document area (the builder
+  stays on the left, tabs above) with drawing tools — **+ Text** (click
+  to place a text box, type straight into it), **+ Arrow** and **+ Box**
+  (drag to draw), **+ Cell** (below), **Select** to move things (text
+  moves by its ⠿ handle) and **Delete** / `Del`. Selecting any item
+  reveals a **format bar**: six colours, text size **A− / A+**, line
+  thickness, **Dash**, **Fill** for boxes, **Bg** to strip a text box's
+  background. Everything is stored with the slide in percent
+  coordinates, so it scales with the screen and shows in playback.
+  **Done** or `Esc` returns to the builder.
+- **+ Cell** places a draggable, **resizable** frame that says *"Click
+  to add from notebook"* — clicking it flips you back to the notebook
+  view with a picker banner; click any card and you're returned to the
+  editor with it placed in the frame. Hovering or selecting a filled
+  frame shows **⇄ Replace** right on the frame (also in the format bar)
+  to swap in a different card, from any open notebook.
 - Everything else lives in the **File ▾** menu: *New presentation*,
   *Rename*, the two auto-builders (*figures* / *figures + docs*, in
   document order), *Save to notebook*, *Download JSON* and *Discard
@@ -291,20 +414,44 @@ Edits autosave as a **draft** in the browser (`localStorage`), per
 presentation — refresh and nothing is lost; the status pill shows
 *auto / saved / unsaved draft*, and *Discard* reverts to the saved copy.
 
-### Named presentations, saved in the notebook
+### Presentations across notebooks
 
-A notebook can hold **multiple named presentations** — switch between
-them (or start a new one) with the selector in Create mode. They live
-under `metadata.semantic.presentations`, so they survive editing,
-re-running and re-rendering. Two routes:
+Projects usually span several notebooks, so the deck works across **all
+open tabs**: the tab strip stays visible in Create mode — switch tabs
+while building and click cards from any notebook; a *Halves* slide can
+show a figure from `part1` next to a figure from `part2`. When more than
+one notebook is open, panes and slides carry a small chip naming the
+source notebook, and the auto-builders walk every tab in order.
 
-1. **Save to .ipynb** (Chrome / Edge) — pick the notebook file once and
-   every presentation is written into its metadata. Reload the notebook
-   in Jupyter afterwards if it is open there.
-2. **Download** — saves `<notebook>.deck.json` next to the page. Put it
-   beside the `.ipynb`: the renderer auto-loads the sidecar on every run.
-   Bake it into the notebook with
-   `python semantic_render.py nb.ipynb --embed-deck nb.deck.json`.
+Internally a pane in a multi-notebook deck is stored as
+`<notebook>::<anchor>`; single-notebook decks keep plain anchors, so
+everything stays compatible with the classic sidecar / embed flow below.
+If a slide references a notebook that isn't open, the pane says so and
+comes back when you reopen the tab.
+
+### Named presentations, saved where you work
+
+Multiple **named presentations** — each one is a ▶ item in the left
+rail; **New** starts one, *File → Rename* (or clicking the name in the
+builder) renames it. Saving routes:
+
+1. **App mode: autosave to project** (default on) — every change is
+   written to `semantic_project.json` in the app's root folder about a
+   second after you make it, alongside your open-tab session. Toggle it
+   with *File → Autosave*; with it off, *File → Save to project* saves
+   manually. *File → Delete presentation* removes one. This is the only
+   route that persists cross-notebook decks, and it needs no file
+   picker.
+2. **Save to .ipynb** (static single-notebook page, Chrome / Edge) —
+   pick the notebook file once and every presentation is written into
+   its `metadata.semantic.presentations`. Reload the notebook in Jupyter
+   afterwards if it is open there.
+3. **Download** — saves `<notebook>.deck.json` (or `project.deck.json`
+   for multi-notebook pages). Put a notebook sidecar beside the
+   `.ipynb`: the renderer auto-loads it on every run; bake it in with
+   `python semantic_render.py nb.ipynb --embed-deck nb.deck.json`. A
+   project-style file renders with
+   `python semantic_render.py a.ipynb b.ipynb --deck project.deck.json`.
 
 Slides reference cards by a **stable anchor** — the cell's `#| id:` if it
 has one, else the notebook's built-in cell id (nbformat ≥ 4.5) — never by
