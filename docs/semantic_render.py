@@ -954,7 +954,18 @@ def _kind_class(kind: str) -> str:
 def render_item(item: Item) -> str:
     badge = _BADGE.get(item.kind, item.kind)
     kclass = _kind_class(item.kind)
-    out_html = "".join(o.payload for o in item.outputs)
+    # mixed outputs (e.g. a printed dataset THEN a plot): the figure is
+    # the face; everything else folds into an "also printed" disclosure
+    imgs = [o for o in item.outputs if o.has_image]
+    others = [o for o in item.outputs if not o.has_image]
+    if imgs and others:
+        out_html = "".join(o.payload for o in imgs) + (
+            '<details class="alsoprinted"><summary>also printed by '
+            'this cell</summary><div class="alsoinner">'
+            + "".join(o.payload for o in others)
+            + "</div></details>")
+    else:
+        out_html = "".join(o.payload for o in item.outputs)
 
     # code: one or more labelled steps folded behind a single toggle
     code_block = ""
@@ -1407,6 +1418,15 @@ pre.error{background:#fbf0ee;border-color:#f0d2cc;color:#8a3221;}
 .caption{font-family:var(--serif);font-size:14px;
   color:var(--ink-2);margin:13px 0 0;padding-left:6px;line-height:1.6;}
 
+details.alsoprinted{margin-top:10px;border:1px dashed var(--paper-3);
+  border-radius:7px;}
+details.alsoprinted>summary{cursor:pointer;font-family:var(--mono);
+  font-size:10.5px;letter-spacing:.08em;color:var(--ink-3);
+  padding:7px 11px;user-select:none;}
+details.alsoprinted[open]>summary{
+  border-bottom:1px solid var(--paper-3);}
+details.alsoprinted .alsoinner{padding:10px 11px;}
+
 .prov{display:flex;align-items:center;gap:7px;flex-wrap:wrap;
   margin:13px 0 0;padding-left:6px;}
 .prov-l{font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;
@@ -1596,12 +1616,6 @@ and everything still resolves; a deleted cell just leaves an empty
 frame you can refill.</li>
 </ul>
 
-<h3>Support</h3>
-<p>PlotLine is free and open source. If it saves you time, you can
-<a href="https://ko-fi.com/plotline" target="_blank"
-rel="noopener">support development on Ko-fi</a> &mdash; or simply star
-the repo, cite it, and share it with your group.</p>
-
 <h3>Run it locally</h3>
 <p>The whole tool is one Python file with no dependencies. For daily
 use &mdash; local file browsing, project files, session restore:
@@ -1630,6 +1644,8 @@ body.presrail-min{--presrail-w:46px;}
 .appbar-spring{flex:1;}
 /* dark variants of the show/hide toggles */
 .appbar .toggle{border-color:#ffffff22;background:#ffffff0a;color:#cdd9e3;}
+.appbar-link{text-decoration:none;display:inline-flex;
+  align-items:center;}
 .appbar .toggle:hover{border-color:var(--cyan);color:#fff;}
 .appbar .toggle.tv.off{color:#69788a;}
 .appbar .menubtn{border-color:#ffffff22;background:none;}
@@ -3189,6 +3205,7 @@ body.slide-editing .apptop{display:none;}
 .an-cell .figframe{flex:1;min-height:0;display:flex;
   align-items:center;justify-content:center;overflow:hidden;
   border:none;padding:6px;}
+.an-cell .figframe+.figframe{border-top:1px solid #ffffff10;}
 .an-cell .figframe img{max-width:100%;max-height:100%;width:auto;
   height:auto;object-fit:contain;margin:0;}
 .an-cell .note{flex:1;min-height:0;overflow:auto;background:#f7fafc;
@@ -3940,6 +3957,14 @@ _DECK_JS = r"""
           c.appendChild(ch);
           var b=cloneBody(it.ns);
           if(b){
+            if(b.querySelector('.figframe')){
+              /* a slide frame wants the plot(s), not the printed
+                 reprs that came with them */
+              $$('.xr-wrap,pre.result,pre.stream,.rich,'
+                +'details.alsoprinted',b).forEach(function(n){
+                if(n.parentNode) n.parentNode.removeChild(n);
+              });
+            }
             if(a.ts) b.style.zoom=a.ts;
             c.appendChild(b);
           }
@@ -5499,9 +5524,12 @@ _TEMPLATE = """<!doctype html>
     <button class="toggle" id="view-raw"
       title="Toggle between the semantic view and the raw notebook
  (cells in order, directives visible)">Raw notebook</button>
+    <span class="appbar-spring"></span>
+    <a class="toggle appbar-link" id="support-btn" href="{kofi}"
+      target="_blank" rel="noopener"
+      title="Support PlotLine on Ko-fi">Support &#9829;</a>
     <button class="toggle" id="help-btn"
       title="How to use, and everything this tool can do">Help</button>
-    <span class="appbar-spring"></span>
   </div>
   <div class="tabsrow">
     <span class="tabs-label">docs</span>
@@ -5566,8 +5594,6 @@ _TEMPLATE = """<!doctype html>
       <span class="deck-spring"></span>
       <a class="help-gh" href="{repo}" target="_blank"
         rel="noopener">GitHub &#8599;</a>
-      <a class="help-gh" href="{kofi}" target="_blank"
-        rel="noopener">Support &#9829;</a>
       <button class="dbtn" id="help-close" title="Close">&#10005;</button>
     </div>
     <div class="help-body">
@@ -6133,6 +6159,13 @@ def _self_test() -> None:
             {"cell_type": "code", "id": "c-clim",
              "source": "#| display: figure\n#| id: clim\n#| depends: load\n#| title: Climatology\n#| caption: Note the ridge.\nplot()",
              "outputs": []},
+            {"cell_type": "code", "id": "c-mixed",
+             "source": "#| id: mixed\n#| title: Repr then plot\nds",
+             "outputs": [
+                 {"output_type": "display_data",
+                  "data": {"text/html": "<div class='xr-a'>xarray</div>"}},
+                 {"output_type": "display_data",
+                  "data": {"image/png": "aGk="}}]},
             {"cell_type": "code", "id": "c-prep",
              "source": "#| title: Open dataset\nds = open_thing()",
              "outputs": []},
@@ -6171,6 +6204,12 @@ def _self_test() -> None:
     assert by_anchor["clim"].chain == ["load"]
     assert by_anchor["fig2"].chain == ["cell:c-prep"]
     assert '"chain": ["cell:c-prep"]' in out
+
+    # mixed-output cell: figure face first, repr behind a disclosure
+    mixed = [it for s in doc.sections for it in s.items
+             if it.anchor == "mixed"][0]
+    assert mixed.kind == "figure"
+    assert "alsoprinted" in out and "also printed by this cell" in out
 
     # new slide layouts, title slides and annotations survive normalizing
     pres2 = _as_presentations([{"name": "n", "slides": [
@@ -6264,6 +6303,7 @@ def _self_test() -> None:
     assert '"mode": "web"' in web_page and 'id="fileinput"' in web_page
     assert 'id="helpdlg"' in web_page and 'id="help-btn"' in web_page
     assert "ko-fi.com/plotline" in web_page
+    assert 'id="support-btn"' in web_page
     assert 'id="welcome-demo"' in web_page and _REPO_URL in web_page
     assert "#| title:" in web_page          # directives documented in help
     import tempfile
