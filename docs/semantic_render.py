@@ -105,6 +105,7 @@ from pathlib import Path
 from typing import Any
 
 _REPO_URL = "https://github.com/alexborowiak/semantic-rendering"
+_KOFI_URL = "https://ko-fi.com/plotline"
 
 # --------------------------------------------------------------------------
 # Directive parsing
@@ -1177,6 +1178,7 @@ def render_page(docs: list[Document], mode: str = "static",
         deck_css=_DECK_CSS,
         deck_js=_DECK_JS,
         repo=_REPO_URL,
+        kofi=_KOFI_URL,
         help_html=_HELP_HTML,
     )
 
@@ -1594,6 +1596,12 @@ and everything still resolves; a deleted cell just leaves an empty
 frame you can refill.</li>
 </ul>
 
+<h3>Support</h3>
+<p>PlotLine is free and open source. If it saves you time, you can
+<a href="https://ko-fi.com/plotline" target="_blank"
+rel="noopener">support development on Ko-fi</a> &mdash; or simply star
+the repo, cite it, and share it with your group.</p>
+
 <h3>Run it locally</h3>
 <p>The whole tool is one Python file with no dependencies. For daily
 use &mdash; local file browsing, project files, session restore:
@@ -1819,6 +1827,7 @@ body.creating-docs .apptop{
 .help-body h3:first-child{border-top:none;margin-top:8px;}
 .help-body ul{margin:6px 0;padding-left:20px;}
 .help-body li{margin:5px 0;}
+.help-body a{color:var(--cyan-deep);}
 .help-body code{font-family:var(--mono);font-size:12px;
   background:var(--paper-2);border:1px solid var(--paper-3);
   border-radius:4px;padding:1px 5px;}
@@ -5543,6 +5552,9 @@ _TEMPLATE = """<!doctype html>
       <a href="#" id="welcome-help">How to use</a>
       <span class="wl-sep">&middot;</span>
       <a href="{repo}" target="_blank" rel="noopener">GitHub</a>
+      <span class="wl-sep">&middot;</span>
+      <a href="{kofi}" target="_blank"
+        rel="noopener">Support &#9829;</a>
     </div>
     <div class="recent" id="welcome-recent"></div>
   </div>
@@ -5554,6 +5566,8 @@ _TEMPLATE = """<!doctype html>
       <span class="deck-spring"></span>
       <a class="help-gh" href="{repo}" target="_blank"
         rel="noopener">GitHub &#8599;</a>
+      <a class="help-gh" href="{kofi}" target="_blank"
+        rel="noopener">Support &#9829;</a>
       <button class="dbtn" id="help-close" title="Close">&#10005;</button>
     </div>
     <div class="help-body">
@@ -6249,6 +6263,7 @@ def _self_test() -> None:
     web_page = render_page([], mode="web")
     assert '"mode": "web"' in web_page and 'id="fileinput"' in web_page
     assert 'id="helpdlg"' in web_page and 'id="help-btn"' in web_page
+    assert "ko-fi.com/plotline" in web_page
     assert 'id="welcome-demo"' in web_page and _REPO_URL in web_page
     assert "#| title:" in web_page          # directives documented in help
     import tempfile
