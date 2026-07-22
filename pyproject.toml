@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "semantic-notebook"
+name = "plotline"
 version = "0.1.0"
-description = "Figure-first semantic viewer and presentation builder for executed Jupyter notebooks - single file, stdlib only"
+description = "Streamline presentations from Jupyter. Display your plots and documentation - figure-first notebook viewing and slide decks, single file, stdlib only"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -23,7 +23,7 @@ classifiers = [
 widget = ["anywidget", "ipywidgets"]
 
 [project.scripts]
-semantic-render = "semantic_render:main"
+plotline = "semantic_render:main"
 
 [tool.setuptools]
 py-modules = ["semantic_render", "semantic_widget"]

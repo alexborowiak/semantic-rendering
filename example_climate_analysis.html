@@ -957,6 +957,12 @@ body.slide-editing .apptop{display:none;}
   border:2px solid #ffffff30;}
 .sw[aria-pressed="true"]{border-color:#fff;
   box-shadow:0 0 0 2px #39a9c0aa;}
+.fmt-lab{font-family:var(--mono);font-size:9px;letter-spacing:.1em;
+  text-transform:uppercase;color:#7e93a4;}
+.sw.trans{background:#16273a;position:relative;overflow:hidden;}
+.sw.trans::after{content:"";position:absolute;left:-2px;right:-2px;
+  top:50%;height:2px;background:#ff6b57;
+  transform:rotate(-45deg);}
 .deck.editing .deck-arrow,.deck.editing .deck-foot{display:none;}
 .slide{position:relative;}
 
@@ -964,9 +970,13 @@ body.slide-editing .apptop{display:none;}
 .annot-layer{position:absolute;inset:0;z-index:6;pointer-events:none;}
 .deck.editing .annot-layer{pointer-events:auto;cursor:crosshair;}
 .deck.editing .annot-layer.tool-select{cursor:default;}
+.deck.editing .annot-layer:not(.tool-select) .an-item,
+.deck.editing .annot-layer:not(.tool-select) .an-item *{
+  cursor:crosshair!important;}
 .annot-layer>svg{position:absolute;inset:0;width:100%;height:100%;
   overflow:visible;pointer-events:none;}
 .deck.editing .annot-layer>svg{pointer-events:auto;}
+.annot-layer>svg.an-svgtop{pointer-events:none!important;z-index:5;}
 .an-item{pointer-events:none;}
 .deck.editing .an-item{pointer-events:auto;}
 .an-rect{position:absolute;border:3px solid #ff6b57;border-radius:4px;}
@@ -991,6 +1001,12 @@ body.slide-editing .apptop{display:none;}
   height:15px;border-radius:4px;background:var(--cyan);
   border:2px solid #0b141d;cursor:nwse-resize;display:none;z-index:3;}
 .an-item.sel .an-resize{display:block;}
+.an-endpt{position:absolute;width:15px;height:15px;
+  margin:-7.5px 0 0 -7.5px;border-radius:50%;background:var(--cyan);
+  border:2px solid #0b141d;display:none;z-index:6;
+  pointer-events:none;}
+.deck.editing .an-endpt.sel{display:block;pointer-events:auto;
+  cursor:grab;}
 
 /* movable title / subtitle on title slides */
 .an-title{position:absolute;transform:translate(-50%,-50%);
@@ -1081,8 +1097,11 @@ body.picking .card:hover{outline:2px solid #fff;outline-offset:2px;}
 .film-list{flex:1;overflow-y:auto;min-height:60px;margin:0 -4px;
   padding:0 4px;}
 .film-row{display:flex;align-items:center;gap:4px;border-radius:7px;
-  margin-bottom:3px;}
+  margin-bottom:3px;cursor:grab;}
 .film-row.current{background:#39a9c01c;outline:1px solid #39a9c055;}
+.film-row.dragging{opacity:.45;}
+.film-row.drop-above{box-shadow:0 -2px 0 var(--cyan);}
+.film-row.drop-below{box-shadow:0 2px 0 var(--cyan);}
 .film-label{flex:1;display:flex;align-items:center;gap:9px;background:none;
   border:none;color:#c3d2df;font-size:11.5px;padding:5px 6px;cursor:pointer;
   text-align:left;min-width:0;font-family:var(--sans);}
@@ -1148,7 +1167,7 @@ window.MathJax = {
 <div class="scrim" id="scrim"></div>
 <header class="apptop" id="apptop">
   <div class="appbar">
-    <span class="apptop-brand">semantic</span>
+    <span class="apptop-brand">PlotLine</span>
     <button class="menubtn" id="menubtn"
       aria-label="Toggle sections"><span></span></button>
     <button class="tab-openbtn" id="tab-open" hidden
@@ -1200,7 +1219,7 @@ window.MathJax = {
 <div class="shell nbshell" data-nb="example_climate_analysis">
   <aside class="rail">
     <div class="railhead">
-      <p class="brand">semantic notebook</p>
+      <p class="brand">PlotLine</p>
       <h1 class="railtitle">Southern Hemisphere blocking &amp; ENSO diagnostics</h1>
       <div class="railmeta">7 figures · 1 datasets · 6 sections</div>
     </div>
@@ -4124,7 +4143,7 @@ fig<span class="op">.</span>tight_layout<span class="op">(</span><span class="op
 </div>
 <div class="welcome" id="welcome" hidden>
   <div class="welcome-box">
-    <p class="brand">semantic notebook</p>
+    <p class="brand">PlotLine</p>
     <h1>Open a notebook</h1>
     <p class="welcome-hint">Drop .ipynb files anywhere in this window,
     or browse for them. Each notebook opens as a tab; presentations can
@@ -4239,17 +4258,21 @@ screen, in execution order &mdash; and &uarr; climbs back out.</li>
 <ul>
 <li>Edits <b>autosave as drafts</b> in your browser as you work.</li>
 <li>Desktop app: presentations autosave to
-<code>semantic_project.json</code> next to where you launched it,
+<code>plotline_project.json</code> next to where you launched it,
 along with your open tabs.</li>
-<li>Anywhere: <i>File &rarr; Download JSON</i> exports a deck;
-<i>File &rarr; Save to notebook</i> writes presentations into the
-.ipynb itself (Chrome/Edge), so they travel with the notebook.</li>
+<li>Anywhere: <i>File &rarr; Download JSON</i> saves a deck as a
+file on your machine; <i>File &rarr; Load deck JSON</i> brings it back
+&mdash; later, or on another computer.</li>
+<li>Decks are robust to notebook edits: slides reference cells by
+<b>stable ids</b>, never position &mdash; re-upload an edited notebook
+and everything still resolves; a deleted cell just leaves an empty
+frame you can refill.</li>
 </ul>
 
 <h3>Run it locally</h3>
 <p>The whole tool is one Python file with no dependencies. For daily
 use &mdash; local file browsing, project files, session restore:
-<code>pip install</code> the repo and run <code>semantic-render</code>,
+<code>pip install</code> the repo and run <code>plotline</code>,
 or just download <code>semantic_render.py</code> and run
 <code>python semantic_render.py</code>.</p>
 
@@ -4274,6 +4297,7 @@ or just download <code>semantic_render.py</code> and run
 </div>
 <div class="drophint" id="drophint" hidden>Drop .ipynb files to open</div>
 <input type="file" id="fileinput" accept=".ipynb" multiple hidden>
+<input type="file" id="deckfile" accept=".json" hidden>
 
 <div class="deck" id="deck" hidden>
   <div class="deck-top">
@@ -4301,6 +4325,8 @@ or just download <code>semantic_render.py</code> and run
             <button class="dc-mi" id="mi-save">Save to notebook&#8230;</button>
             <button class="dc-mi" id="mi-autosave" hidden></button>
             <button class="dc-mi" id="mi-dl">Download JSON</button>
+            <button class="dc-mi" id="mi-load">Load deck
+              JSON&#8230;</button>
             <button class="dc-mi" id="mi-discard">Discard changes</button>
             <button class="dc-mi" id="mi-del">Delete presentation</button>
           </div>
@@ -4374,6 +4400,7 @@ or just download <code>semantic_render.py</code> and run
           title="A resizable frame holding any notebook card">
           + Cell</button>
         <span class="et-fmt" id="et-fmt" hidden>
+          <span class="fmt-lab" id="fmt-txlab" hidden>T</span>
           <button class="sw" data-c="#ff6b57"
             style="background:#ff6b57" title="Coral"></button>
           <button class="sw" data-c="#f0a848"
@@ -4386,6 +4413,19 @@ or just download <code>semantic_render.py</code> and run
             style="background:#ffffff" title="White"></button>
           <button class="sw" data-c="#16202b"
             style="background:#16202b" title="Ink"></button>
+          <span class="fmt-lab" id="fmt-bglab" hidden>box</span>
+          <button class="sw swbg trans" data-c="none" hidden
+            title="Transparent box"></button>
+          <button class="sw swbg" data-c="#0e1926" hidden
+            style="background:#0e1926" title="Dark box"></button>
+          <button class="sw swbg" data-c="#ffffff" hidden
+            style="background:#ffffff" title="White box"></button>
+          <button class="sw swbg" data-c="#ff6b57" hidden
+            style="background:#ff6b57" title="Coral box"></button>
+          <button class="sw swbg" data-c="#f0a848" hidden
+            style="background:#f0a848" title="Amber box"></button>
+          <button class="sw swbg" data-c="#39a9c0" hidden
+            style="background:#39a9c0" title="Cyan box"></button>
           <button class="dbtn etm" id="fmt-smaller"
             title="Smaller text">A&#8722;</button>
           <button class="dbtn etm" id="fmt-bigger"
@@ -4396,8 +4436,6 @@ or just download <code>semantic_render.py</code> and run
             title="Dashed on/off">Dash</button>
           <button class="dbtn etm" id="fmt-fill"
             title="Fill on/off">Fill</button>
-          <button class="dbtn etm" id="fmt-bg"
-            title="Text background on/off">Bg</button>
           <button class="dbtn etm" id="fmt-replace"
             title="Swap in a different notebook card">&#8644;
             Replace</button>
@@ -5588,6 +5626,9 @@ or just download <code>semantic_render.py</code> and run
   function editableText(layer,el,getVal,setVal,idx){
     el.contentEditable='true';el.spellcheck=false;
     el.addEventListener('focus',function(){
+      if(tool!=='select') el.blur();
+    });
+    el.addEventListener('focus',function(){
       if(!getVal()) el.textContent='';
     });
     el.addEventListener('blur',function(){
@@ -5595,6 +5636,7 @@ or just download <code>semantic_render.py</code> and run
       markDirty();
     });
     el.addEventListener('mousedown',function(e){
+      if(tool!=='select') return;   /* placing mode: draw over me */
       e.stopPropagation();
       selectAnnot(layer,idx);
     });
@@ -5602,10 +5644,15 @@ or just download <code>semantic_render.py</code> and run
   function renderAnnots(layer,s){
     var editing=(mode==='edit');
     layer.innerHTML='';
+    /* two svg layers: fat invisible hit-lines UNDER the items (so
+       frames stay clickable), visible strokes ON TOP of everything
+       (click-transparent) so arrows are never hidden behind frames */
     var svg=document.createElementNS(AN_NS,'svg');
     layer.appendChild(svg);
+    var svgTop=document.createElementNS(AN_NS,'svg');
+    svgTop.setAttribute('class','an-svgtop');
     var defs=document.createElementNS(AN_NS,'defs');
-    svg.appendChild(defs);
+    svgTop.appendChild(defs);
 
     if(s.layout==='title'){
       ['t','s'].forEach(function(which){
@@ -5660,13 +5707,26 @@ or just download <code>semantic_render.py</code> and run
         ln.setAttribute('stroke-width',a.sw||3);
         if(a.dash) ln.setAttribute('stroke-dasharray','9 7');
         ln.setAttribute('marker-end','url(#an-head-'+i+')');
-        svg.appendChild(ln);
+        svgTop.appendChild(ln);
         var hit=document.createElementNS(AN_NS,'line');
         hit.setAttribute('x1',a.x1+'%');hit.setAttribute('y1',a.y1+'%');
         hit.setAttribute('x2',a.x2+'%');hit.setAttribute('y2',a.y2+'%');
         hit.setAttribute('class','an-arrow-hit an-item');
         hit.setAttribute('data-idx',i);
         svg.appendChild(hit);
+        if(editing){
+          ['1','2'].forEach(function(which){
+            var ep=document.createElement('span');
+            ep.className='an-endpt an-endpt-'+which
+              +(selAnnot===i?' sel':'');
+            ep.style.left=a['x'+which]+'%';
+            ep.style.top=a['y'+which]+'%';
+            ep.setAttribute('data-idx',i);
+            ep.setAttribute('data-ep',which);
+            ep.title='Drag to redirect the arrow';
+            layer.appendChild(ep);
+          });
+        }
       } else if(a.k==='rect'){
         var r=document.createElement('div');
         r.className='an-item an-rect'+(selAnnot===i?' sel':'');
@@ -5698,7 +5758,10 @@ or just download <code>semantic_render.py</code> and run
           if(multiNb()) ch.appendChild(nbChip('spane-nb',it.nb));
           c.appendChild(ch);
           var b=cloneBody(it.ns);
-          if(b) c.appendChild(b);
+          if(b){
+            if(a.ts) b.style.zoom=a.ts;
+            c.appendChild(b);
+          }
           if((a.h||30)>=55){
             var card=cardEl(it.ns);
             var cap=card?card.querySelector('.caption'):null;
@@ -5714,8 +5777,9 @@ or just download <code>semantic_render.py</code> and run
             rb.innerHTML='&#8644; Replace';
             rb.title='Swap in a different notebook card';
             rb.addEventListener('mousedown',function(e){
-              e.stopPropagation();});
+              if(tool==='select') e.stopPropagation();});
             rb.addEventListener('click',function(e){
+              if(tool!=='select') return;
               e.stopPropagation();startPick(i);});
             c.appendChild(rb);
           }
@@ -5725,8 +5789,9 @@ or just download <code>semantic_render.py</code> and run
           pb.textContent=a.ref?('missing: '+a.ref)
             :'Click to add from notebook';
           pb.addEventListener('mousedown',function(e){
-            e.stopPropagation();});
+            if(tool==='select') e.stopPropagation();});
           pb.addEventListener('click',function(e){
+            if(tool!=='select') return;
             e.stopPropagation();startPick(i);});
           c.appendChild(pb);
         }
@@ -5739,6 +5804,10 @@ or just download <code>semantic_render.py</code> and run
         d2.style.left=a.x+'%';d2.style.top=a.y+'%';
         d2.style.fontSize=fontPx(layer,a.size);
         d2.style.color=a.color||'#ffffff';
+        if(a.bg!==0&&a.bgc){
+          d2.style.background=a.bgc;
+          d2.style.borderColor='transparent';
+        }
         if(a.w){d2.style.width=a.w+'%';d2.style.maxWidth='none';}
         d2.setAttribute('data-idx',i);
         if(editing) d2.appendChild(mkHandle());
@@ -5754,6 +5823,7 @@ or just download <code>semantic_render.py</code> and run
         layer.appendChild(d2);
       }
     });
+    layer.appendChild(svgTop);
   }
   function selectAnnot(layer,idx){
     selAnnot=idx;
@@ -5781,18 +5851,30 @@ or just download <code>semantic_render.py</code> and run
       if(on&&pressed!==undefined)
         el.setAttribute('aria-pressed',pressed.toString());
     }
-    $$('.sw',bar).forEach(function(sw){
+    $$('.sw:not(.swbg)',bar).forEach(function(sw){
       sw.hidden=(kind==='cell');
       sw.setAttribute('aria-pressed',
         ((a.color||defaultColor(kind))===sw.dataset.c).toString());
     });
     var isText=(kind==='text');
-    show('#fmt-smaller',isText);
-    show('#fmt-bigger',isText);
+    var cellText=false;
+    if(kind==='cell'&&a.ref){
+      var ci=resolveRef(a.ref);
+      cellText=!!ci&&ci.kind!=='figure'&&ci.kind!=='diagnostic';
+    }
+    show('#fmt-smaller',isText||cellText);
+    show('#fmt-bigger',isText||cellText);
     show('#fmt-line',kind==='arrow'||kind==='rect');
     show('#fmt-dash',kind==='arrow'||kind==='rect',!!a.dash);
     show('#fmt-fill',kind==='rect',!!a.fill);
-    show('#fmt-bg',isText&&typeof selAnnot==='number',a.bg!==0);
+    var plainText=isText&&typeof selAnnot==='number';
+    show('#fmt-txlab',isText&&kind!=='cell');
+    show('#fmt-bglab',plainText);
+    $$('.swbg',bar).forEach(function(sw){
+      sw.hidden=!plainText;
+      var cur_=(a.bg===0)?'none':(a.bgc||'#0e1926');
+      sw.setAttribute('aria-pressed',(cur_===sw.dataset.c).toString());
+    });
     show('#fmt-replace',kind==='cell');
   }
   function fmtApply(fn){
@@ -5883,6 +5965,44 @@ or just download <code>semantic_render.py</code> and run
     document.addEventListener('mousemove',mm);
     document.addEventListener('mouseup',mu);
   }
+  function distToSeg(px,py,x1,y1,x2,y2){
+    var dx=x2-x1,dy=y2-y1;
+    var L2=dx*dx+dy*dy;
+    var u=L2?((px-x1)*dx+(py-y1)*dy)/L2:0;
+    u=Math.max(0,Math.min(1,u));
+    return Math.hypot(px-(x1+u*dx),py-(y1+u*dy));
+  }
+  function startEndpoint(layer,s,idx,ep,ev0){
+    ev0.preventDefault();
+    var a=(s.annots||[])[idx];
+    if(!a||a.k!=='arrow') return;
+    function mm(ev){
+      var p=pctPoint(layer,ev);
+      a['x'+ep]=p.x;a['y'+ep]=p.y;
+      renderAnnots(layer,s);selectAnnot(layer,idx);
+    }
+    function mu(){
+      document.removeEventListener('mousemove',mm);
+      document.removeEventListener('mouseup',mu);
+      markDirty();
+    }
+    document.addEventListener('mousemove',mm);
+    document.addEventListener('mouseup',mu);
+  }
+  function arrowAt(layer,s,ev){
+    if(!s.annots) return -1;
+    var r=layer.getBoundingClientRect();
+    var px=ev.clientX-r.left,py=ev.clientY-r.top;
+    var best=-1,bestD=12;
+    s.annots.forEach(function(a,i){
+      if(a.k!=='arrow') return;
+      var d=distToSeg(px,py,
+        a.x1/100*r.width,a.y1/100*r.height,
+        a.x2/100*r.width,a.y2/100*r.height);
+      if(d<bestD){bestD=d;best=i;}
+    });
+    return best;
+  }
   function wireEditor(layer,s){
     layer.addEventListener('mousedown',function(ev){
       if(mode!=='edit') return;
@@ -5891,19 +6011,38 @@ or just download <code>semantic_render.py</code> and run
         ||(t.getAttribute&&t.classList
            &&t.classList.contains('an-item')?t:null);
       if(tool==='select'){
+        /* endpoint handles first, then resize handles, then arrows
+           (they render on top, so they win the click even over a
+           frame), then the item */
+        if(t.classList&&t.classList.contains('an-endpt')){
+          var idxE=+t.getAttribute('data-idx');
+          selectAnnot(layer,idxE);
+          startEndpoint(layer,s,idxE,
+            t.getAttribute('data-ep'),ev);
+          return;
+        }
+        if(item&&t.classList&&t.classList.contains('an-resize')){
+          var rawR=item.getAttribute('data-idx');
+          var idxR=(rawR==='t'||rawR==='s')?rawR:+rawR;
+          selectAnnot(layer,idxR);
+          startResize(layer,s,idxR,ev);
+          return;
+        }
+        var ai=arrowAt(layer,s,ev);
+        if(ai>=0){
+          selectAnnot(layer,ai);
+          startMove(layer,s,ai,ev);
+          return;
+        }
         if(item){
           var raw=item.getAttribute('data-idx');
           var idx=(raw==='t'||raw==='s')?raw:+raw;
           selectAnnot(layer,idx);
-          if(t.classList&&t.classList.contains('an-resize')){
-            startResize(layer,s,idx,ev);
-          } else {
-            var handleOnly=item.classList.contains('an-text')
-              ||item.classList.contains('an-title');
-            if(!handleOnly
-               ||(t.classList&&t.classList.contains('an-handle')))
-              startMove(layer,s,idx,ev);
-          }
+          var handleOnly=item.classList.contains('an-text')
+            ||item.classList.contains('an-title');
+          if(!handleOnly
+             ||(t.classList&&t.classList.contains('an-handle')))
+            startMove(layer,s,idx,ev);
         } else selectAnnot(layer,null);
         return;
       }
@@ -6015,15 +6154,26 @@ or just download <code>semantic_render.py</code> and run
     if(b) b.addEventListener('click',function(){fmtApply(fn);});
   }
   onFmt('#fmt-smaller',function(a){
-    a.size=Math.max(1.2,(a.size||2.6)/1.25);});
+    if(a.k==='cell') a.ts=Math.max(0.5,
+      Math.round((a.ts||1)/1.15*100)/100);
+    else a.size=Math.max(1.2,(a.size||2.6)/1.25);});
   onFmt('#fmt-bigger',function(a){
-    a.size=Math.min(20,(a.size||2.6)*1.25);});
+    if(a.k==='cell') a.ts=Math.min(3,
+      Math.round((a.ts||1)*1.15*100)/100);
+    else a.size=Math.min(20,(a.size||2.6)*1.25);});
   onFmt('#fmt-line',function(a){
     var cur_=a.sw||3;
     a.sw=cur_>=5?2:(cur_>=3.5?5:3.5);});
   onFmt('#fmt-dash',function(a){a.dash=a.dash?0:1;});
   onFmt('#fmt-fill',function(a){a.fill=a.fill?0:1;});
-  onFmt('#fmt-bg',function(a){a.bg=(a.bg===0)?1:0;});
+  $$('#et-fmt .swbg').forEach(function(sw){
+    sw.addEventListener('click',function(){
+      fmtApply(function(a){
+        if(sw.dataset.c==='none'){a.bg=0;}
+        else{a.bg=1;a.bgc=sw.dataset.c;}
+      });
+    });
+  });
   var repBtn=$('#fmt-replace');
   if(repBtn) repBtn.addEventListener('click',function(){
     if(typeof selAnnot==='number') startPick(selAnnot);
@@ -6491,11 +6641,27 @@ or just download <code>semantic_render.py</code> and run
       return a.k==='text'&&a.text;})[0];
     return tx?tx.text:'empty slide';
   }
+  var draggingSlide=-1;
   function renderFilm(){
     var list=$('#film-list');list.innerHTML='';
     pres.slides.forEach(function(s,i){
       var row=document.createElement('div');
       row.className='film-row'+(i===cur?' current':'');
+      row.dataset.idx=i;
+      row.draggable=true;
+      row.title='Drag to reorder';
+      row.addEventListener('dragstart',function(e){
+        draggingSlide=i;
+        row.classList.add('dragging');
+        try{e.dataTransfer.setData('text/plain','slide-'+i);}
+        catch(err){}
+        e.dataTransfer.effectAllowed='move';
+      });
+      row.addEventListener('dragend',function(){
+        draggingSlide=-1;
+        row.classList.remove('dragging');
+        clearFilmMarks();
+      });
       var lbl=document.createElement('button');lbl.className='film-label';
       var num=document.createElement('span');num.className='film-n';
       num.textContent=(i+1);lbl.appendChild(num);
@@ -6519,6 +6685,50 @@ or just download <code>semantic_render.py</code> and run
       list.appendChild(row);
     });
   }
+  function clearFilmMarks(){
+    $$('#film-list .film-row.drop-above,#film-list .film-row.drop-below')
+      .forEach(function(r){
+        r.classList.remove('drop-above');
+        r.classList.remove('drop-below');
+      });
+  }
+  (function(){
+    var list=$('#film-list'); if(!list) return;
+    list.addEventListener('dragover',function(e){
+      if(draggingSlide<0) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect='move';
+      clearFilmMarks();
+      var row=e.target.closest&&e.target.closest('.film-row');
+      if(!row) return;
+      var r=row.getBoundingClientRect();
+      row.classList.add(
+        e.clientY>r.top+r.height/2?'drop-below':'drop-above');
+    });
+    list.addEventListener('dragleave',function(e){
+      if(e.target===list) clearFilmMarks();
+    });
+    list.addEventListener('drop',function(e){
+      if(draggingSlide<0) return;
+      e.preventDefault();
+      var from=draggingSlide;
+      draggingSlide=-1;
+      clearFilmMarks();
+      var row=e.target.closest&&e.target.closest('.film-row');
+      if(!row) return;
+      var to=+row.dataset.idx;
+      var r=row.getBoundingClientRect();
+      if(e.clientY>r.top+r.height/2) to++;
+      if(to>from) to--;
+      if(to===from) return;
+      var moved=pres.slides.splice(from,1)[0];
+      pres.slides.splice(to,0,moved);
+      if(cur===from) cur=to;
+      else if(from<cur&&to>=cur) cur--;
+      else if(from>cur&&to<=cur) cur++;
+      markDirty();refresh();
+    });
+  })();
   function renderCreate(){
     renderPresRow();renderLayoutRow();renderPaneEditor();renderFilm();
   }
@@ -6869,7 +7079,7 @@ or just download <code>semantic_render.py</code> and run
         lsDel(PFX+(pres.name||'untitled'));
         source='saved';status();renderPresRow();
         if(!silent)
-          toast('Saved "'+pres.name+'" to semantic_project.json');
+          toast('Saved "'+pres.name+'" to plotline_project.json');
       }).catch(function(e){
         if(!silent)
           toast('Save failed: '+(e&&e.message?e.message:e));
@@ -6899,6 +7109,8 @@ or just download <code>semantic_render.py</code> and run
   });
   renderAutosaveItem();
 
+  /* direct save-into-.ipynb is parked for now (kept for later) */
+  var ENABLE_SAVE_TO_IPYNB=false;
   var writeBtn=$('#mi-save');
   if(APP.mode==='app'){
     writeBtn.textContent='Save to project';
@@ -6907,7 +7119,8 @@ or just download <code>semantic_render.py</code> and run
       if(!requireName()) return;
       saveToProject(false);
     });
-  } else if(APP.order.length===1&&window.showOpenFilePicker){
+  } else if(ENABLE_SAVE_TO_IPYNB
+      &&APP.order.length===1&&window.showOpenFilePicker){
     writeBtn.addEventListener('click',function(){
       closeMenu();
       if(!requireName()) return;
@@ -6957,6 +7170,55 @@ or just download <code>semantic_render.py</code> and run
         +'or bake in with --embed-deck.'
       :'Downloaded. Load it with --deck, or save to the project instead.');
   });
+  menuAction('#mi-load',function(){
+    var fi=document.getElementById('deckfile');
+    if(fi) fi.click();
+  });
+  (function(){
+    var fi=document.getElementById('deckfile');
+    if(!fi) return;
+    fi.addEventListener('change',function(){
+      var f=this.files&&this.files[0];
+      this.value='';
+      if(!f) return;
+      f.text().then(function(txt){
+        var obj=JSON.parse(txt);
+        var list=(obj&&Array.isArray(obj.presentations))
+          ?obj.presentations
+          :Array.isArray(obj)?obj
+          :(obj&&Array.isArray(obj.slides))?[obj]:null;
+        if(!list||!list.length){
+          toast('That file does not look like a saved deck');
+          return;
+        }
+        var imported=0,firstName=null;
+        list.forEach(function(pr){
+          if(!pr||!Array.isArray(pr.slides)) return;
+          var np=normPres(pr);
+          var base=np.name||'imported',nm=base,k=1;
+          while(savedByName(nm)||lsGet(PFX+nm)){
+            k++;nm=base+'-'+k;
+          }
+          np.name=nm;
+          lsSet(PFX+nm,JSON.stringify(np));
+          if(!firstName) firstName=nm;
+          imported++;
+        });
+        if(!imported){
+          toast('No presentations found in that file');
+          return;
+        }
+        lsSet(PFX+'last',firstName);
+        loadPresentation(firstName);
+        cur=0;activePane=firstEmpty(pres.slides[0]);
+        status();refresh();
+        toast('Imported '+imported+' presentation'
+          +(imported>1?'s':'')+' (as drafts)');
+      }).catch(function(e){
+        toast('Import failed: '+((e&&e.message)||e));
+      });
+    });
+  })();
   menuAction('#mi-discard',function(){
     lsDel(PFX+(pres.name||'untitled'));
     loadPresentation(pres.name);

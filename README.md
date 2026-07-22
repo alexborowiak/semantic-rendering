@@ -1,4 +1,6 @@
-# Semantic notebook renderer
+# PlotLine
+
+**Streamline presentations from Jupyter. Display your plots and documentation.**
 
 Turn an **executed** Jupyter notebook into a figure-first, nonlinear analysis
 environment. Instead of rendering every cell with equal weight (the Quarto /
@@ -46,7 +48,7 @@ beneath it, and a vertical **presentations rail** down the left edge.
   bottom-left brings it back. While the builder is docked, notebook tabs
   keep working — switch tabs to pull cards from different notebooks into
   the same deck.
-- Open tabs and recent files are remembered in `semantic_project.json` next to
+- Open tabs and recent files are remembered in `plotline_project.json` next to
   where you launched the app — restart later and your workspace comes back.
 - Presentations can **mix cards from every open tab** (see below) and save
   into the same project file.
@@ -130,7 +132,7 @@ The repo is pip-installable (`pyproject.toml` included):
 
 ```bash
 pip install .            # or: pipx install .
-semantic-render          # launches the app from anywhere
+plotline                 # launches the app from anywhere
 ```
 
 The Jupyter widget extras come with `pip install ".[widget]"`.
@@ -436,22 +438,20 @@ rail; **New** starts one, *File → Rename* (or clicking the name in the
 builder) renames it. Saving routes:
 
 1. **App mode: autosave to project** (default on) — every change is
-   written to `semantic_project.json` in the app's root folder about a
+   written to `plotline_project.json` in the app's root folder about a
    second after you make it, alongside your open-tab session. Toggle it
    with *File → Autosave*; with it off, *File → Save to project* saves
-   manually. *File → Delete presentation* removes one. This is the only
-   route that persists cross-notebook decks, and it needs no file
-   picker.
-2. **Save to .ipynb** (static single-notebook page, Chrome / Edge) —
-   pick the notebook file once and every presentation is written into
-   its `metadata.semantic.presentations`. Reload the notebook in Jupyter
-   afterwards if it is open there.
-3. **Download** — saves `<notebook>.deck.json` (or `project.deck.json`
-   for multi-notebook pages). Put a notebook sidecar beside the
-   `.ipynb`: the renderer auto-loads it on every run; bake it in with
-   `python semantic_render.py nb.ipynb --embed-deck nb.deck.json`. A
-   project-style file renders with
-   `python semantic_render.py a.ipynb b.ipynb --deck project.deck.json`.
+   manually. *File → Delete presentation* removes one.
+2. **Download / Load deck JSON** (everywhere, including the web
+   version) — *Download JSON* saves the deck as a file on your machine;
+   *Load deck JSON…* imports it back, later or on another computer. In
+   the web version, edits also autosave as browser drafts, so a normal
+   reload never loses work. A sidecar `<notebook>.deck.json` placed
+   beside a local `.ipynb` auto-loads; bake one in with
+   `python semantic_render.py nb.ipynb --embed-deck nb.deck.json`, or
+   render with a project file via `--deck project.deck.json`.
+   (Direct save-into-.ipynb from the browser exists in the code but is
+   currently disabled.)
 
 Slides reference cards by a **stable anchor** — the cell's `#| id:` if it
 has one, else the notebook's built-in cell id (nbformat ≥ 4.5) — never by

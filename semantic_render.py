@@ -1164,7 +1164,7 @@ def render_page(docs: list[Document], mode: str = "static",
     elif docs:
         title = f"{docs[0].title} (+{len(docs) - 1})"
     else:
-        title = "Semantic notebooks"
+        title = "PlotLine"
     return _TEMPLATE.format(
         title=html.escape(title),
         shells=shells,
@@ -1583,17 +1583,21 @@ screen, in execution order &mdash; and &uarr; climbs back out.</li>
 <ul>
 <li>Edits <b>autosave as drafts</b> in your browser as you work.</li>
 <li>Desktop app: presentations autosave to
-<code>semantic_project.json</code> next to where you launched it,
+<code>plotline_project.json</code> next to where you launched it,
 along with your open tabs.</li>
-<li>Anywhere: <i>File &rarr; Download JSON</i> exports a deck;
-<i>File &rarr; Save to notebook</i> writes presentations into the
-.ipynb itself (Chrome/Edge), so they travel with the notebook.</li>
+<li>Anywhere: <i>File &rarr; Download JSON</i> saves a deck as a
+file on your machine; <i>File &rarr; Load deck JSON</i> brings it back
+&mdash; later, or on another computer.</li>
+<li>Decks are robust to notebook edits: slides reference cells by
+<b>stable ids</b>, never position &mdash; re-upload an edited notebook
+and everything still resolves; a deleted cell just leaves an empty
+frame you can refill.</li>
 </ul>
 
 <h3>Run it locally</h3>
 <p>The whole tool is one Python file with no dependencies. For daily
 use &mdash; local file browsing, project files, session restore:
-<code>pip install</code> the repo and run <code>semantic-render</code>,
+<code>pip install</code> the repo and run <code>plotline</code>,
 or just download <code>semantic_render.py</code> and run
 <code>python semantic_render.py</code>.</p>
 """
@@ -2588,6 +2592,8 @@ _DECK_HTML = """
             <button class="dc-mi" id="mi-save">Save to notebook&#8230;</button>
             <button class="dc-mi" id="mi-autosave" hidden></button>
             <button class="dc-mi" id="mi-dl">Download JSON</button>
+            <button class="dc-mi" id="mi-load">Load deck
+              JSON&#8230;</button>
             <button class="dc-mi" id="mi-discard">Discard changes</button>
             <button class="dc-mi" id="mi-del">Delete presentation</button>
           </div>
@@ -5245,7 +5251,7 @@ _DECK_JS = r"""
         lsDel(PFX+(pres.name||'untitled'));
         source='saved';status();renderPresRow();
         if(!silent)
-          toast('Saved "'+pres.name+'" to semantic_project.json');
+          toast('Saved "'+pres.name+'" to plotline_project.json');
       }).catch(function(e){
         if(!silent)
           toast('Save failed: '+(e&&e.message?e.message:e));
@@ -5275,6 +5281,8 @@ _DECK_JS = r"""
   });
   renderAutosaveItem();
 
+  /* direct save-into-.ipynb is parked for now (kept for later) */
+  var ENABLE_SAVE_TO_IPYNB=false;
   var writeBtn=$('#mi-save');
   if(APP.mode==='app'){
     writeBtn.textContent='Save to project';
@@ -5283,7 +5291,8 @@ _DECK_JS = r"""
       if(!requireName()) return;
       saveToProject(false);
     });
-  } else if(APP.order.length===1&&window.showOpenFilePicker){
+  } else if(ENABLE_SAVE_TO_IPYNB
+      &&APP.order.length===1&&window.showOpenFilePicker){
     writeBtn.addEventListener('click',function(){
       closeMenu();
       if(!requireName()) return;
@@ -5333,6 +5342,55 @@ _DECK_JS = r"""
         +'or bake in with --embed-deck.'
       :'Downloaded. Load it with --deck, or save to the project instead.');
   });
+  menuAction('#mi-load',function(){
+    var fi=document.getElementById('deckfile');
+    if(fi) fi.click();
+  });
+  (function(){
+    var fi=document.getElementById('deckfile');
+    if(!fi) return;
+    fi.addEventListener('change',function(){
+      var f=this.files&&this.files[0];
+      this.value='';
+      if(!f) return;
+      f.text().then(function(txt){
+        var obj=JSON.parse(txt);
+        var list=(obj&&Array.isArray(obj.presentations))
+          ?obj.presentations
+          :Array.isArray(obj)?obj
+          :(obj&&Array.isArray(obj.slides))?[obj]:null;
+        if(!list||!list.length){
+          toast('That file does not look like a saved deck');
+          return;
+        }
+        var imported=0,firstName=null;
+        list.forEach(function(pr){
+          if(!pr||!Array.isArray(pr.slides)) return;
+          var np=normPres(pr);
+          var base=np.name||'imported',nm=base,k=1;
+          while(savedByName(nm)||lsGet(PFX+nm)){
+            k++;nm=base+'-'+k;
+          }
+          np.name=nm;
+          lsSet(PFX+nm,JSON.stringify(np));
+          if(!firstName) firstName=nm;
+          imported++;
+        });
+        if(!imported){
+          toast('No presentations found in that file');
+          return;
+        }
+        lsSet(PFX+'last',firstName);
+        loadPresentation(firstName);
+        cur=0;activePane=firstEmpty(pres.slides[0]);
+        status();refresh();
+        toast('Imported '+imported+' presentation'
+          +(imported>1?'s':'')+' (as drafts)');
+      }).catch(function(e){
+        toast('Import failed: '+((e&&e.message)||e));
+      });
+    });
+  })();
   menuAction('#mi-discard',function(){
     lsDel(PFX+(pres.name||'untitled'));
     loadPresentation(pres.name);
@@ -5383,7 +5441,7 @@ _DECK_JS = r"""
 _SHELL_TEMPLATE = """<div class="shell nbshell" data-nb="{stem}"{path_attr}>
   <aside class="rail">
     <div class="railhead">
-      <p class="brand">semantic notebook</p>
+      <p class="brand">PlotLine</p>
       <h1 class="railtitle">{title}</h1>
       <div class="railmeta">{meta}</div>
     </div>
@@ -5417,7 +5475,7 @@ _TEMPLATE = """<!doctype html>
 <div class="scrim" id="scrim"></div>
 <header class="apptop" id="apptop">
   <div class="appbar">
-    <span class="apptop-brand">semantic</span>
+    <span class="apptop-brand">PlotLine</span>
     <button class="menubtn" id="menubtn"
       aria-label="Toggle sections"><span></span></button>
     <button class="tab-openbtn" id="tab-open" hidden
@@ -5470,7 +5528,7 @@ _TEMPLATE = """<!doctype html>
 </div>
 <div class="welcome" id="welcome" hidden>
   <div class="welcome-box">
-    <p class="brand">semantic notebook</p>
+    <p class="brand">PlotLine</p>
     <h1>Open a notebook</h1>
     <p class="welcome-hint">Drop .ipynb files anywhere in this window,
     or browse for them. Each notebook opens as a tab; presentations can
@@ -5521,6 +5579,7 @@ _TEMPLATE = """<!doctype html>
 </div>
 <div class="drophint" id="drophint" hidden>Drop .ipynb files to open</div>
 <input type="file" id="fileinput" accept=".ipynb" multiple hidden>
+<input type="file" id="deckfile" accept=".json" hidden>
 {deck_shell}
 <script type="application/json" id="app-data">{app_data}</script>
 <script>{js}</script>
@@ -5660,7 +5719,14 @@ _WEB_LOADER = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Semantic Notebook</title>
+<title>PlotLine &mdash; presentations from Jupyter</title>
+<meta name="description" content="Streamline presentations from
+ Jupyter. Display your plots and documentation - figure-first notebook
+ viewing and slide decks, entirely in your browser.">
+<meta property="og:title" content="PlotLine">
+<meta property="og:description" content="Streamline presentations from
+ Jupyter. Display your plots and documentation.">
+<meta property="og:type" content="website">
 <style>
   body{margin:0;background:#0a141d;color:#cdd9e3;
     font-family:ui-monospace,Menlo,Consolas,monospace;display:flex;
@@ -5678,7 +5744,7 @@ _WEB_LOADER = r"""<!doctype html>
 </head>
 <body>
 <div class="boot" id="boot">
-  <h1>semantic notebook</h1>
+  <h1>PlotLine</h1>
   <p id="bootmsg">Loading the Python runtime (first visit only takes a
   few seconds)&#8230;</p>
   <div class="bar"><i></i></div>
@@ -5721,7 +5787,7 @@ _WEB_LOADER = r"""<!doctype html>
 # cross-notebook presentations, everything saved in semantic_project.json
 # --------------------------------------------------------------------------
 
-_PROJECT_FILE = "semantic_project.json"
+_PROJECT_FILE = "plotline_project.json"
 
 
 def _stem_for(path: Path, taken: set[str]) -> str:
@@ -5750,8 +5816,13 @@ class _AppState:
         return self.root / _PROJECT_FILE
 
     def _load(self) -> None:
+        path = self.project_path
+        if not path.exists():
+            legacy = self.root / "semantic_project.json"
+            if legacy.exists():        # migrate on next save
+                path = legacy
         try:
-            d = json.loads(self.project_path.read_text(encoding="utf-8"))
+            d = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return
         if not isinstance(d, dict):
@@ -5896,7 +5967,7 @@ def _make_handler(state: _AppState):
             query = urllib.parse.parse_qs(url.query)
             if url.path == "/":
                 if not self._authed(query):
-                    self._html("<h1>semantic notebook app</h1>"
+                    self._html("<h1>PlotLine</h1>"
                                "<p>Open the exact URL printed in the "
                                "terminal (it carries a session token).</p>",
                                403)
@@ -6012,7 +6083,7 @@ def run_app(root: Path, notebooks: list, port: int = 8765,
     except OSError:                 # port busy -> any free port
         httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     url = f"http://127.0.0.1:{httpd.server_address[1]}/?t={state.token}"
-    print("semantic notebook app")
+    print("PlotLine")
     print(f"  url:     {url}")
     print(f"  project: {state.project_path}")
     print("  Open notebooks with '+ Open' or drop .ipynb files onto the "
@@ -6149,6 +6220,19 @@ def _self_test() -> None:
     })
     assert '"mode": "app"' in app_page and "tok123" in app_page
     assert 'data-path="x.ipynb"' in app_page
+
+    # decks survive notebook edits: anchors are ids, never positions —
+    # reordering cells and editing text must keep every anchor alive
+    import copy
+    nb_edit = copy.deepcopy(nb)
+    nb_edit["cells"] = list(reversed(nb_edit["cells"]))
+    for c in nb_edit["cells"]:
+        if c.get("id") == "md1":
+            c["source"] = "EDITED prose, same cell id"
+    doc_e = parse_notebook(nb_edit)
+    anchors_e = {it.anchor for s in doc_e.sections for it in s.items}
+    assert "clim" in anchors_e and "cell:md1" in anchors_e
+    assert "fig2" in anchors_e
 
     # server helpers: directory listing shape + stem dedupe
     listing = _list_dir(str(Path(__file__).parent))
