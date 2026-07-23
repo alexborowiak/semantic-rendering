@@ -4120,6 +4120,23 @@ ul.an-ul li{margin:.18em 0;white-space:pre-wrap;}
 .deck.editing .an-cell:hover .an-cellbtn,
 .deck.editing .an-cell.sel .an-cellbtn{display:block;}
 .an-cellbtn:hover{color:#fff;border-color:var(--cyan);}
+/* which part of a cell a frame shows: code / figure / output */
+.an-cellpart{font-family:var(--mono);font-size:9px;letter-spacing:.08em;
+  text-transform:uppercase;color:#7fb6c6;background:#39a9c022;
+  border-radius:4px;padding:1px 6px;flex:none;}
+.cellparts{position:absolute;top:5px;left:5px;z-index:5;display:none;
+  gap:3px;flex-wrap:wrap;max-width:70%;}
+.deck.editing .an-cell:hover .cellparts,
+.deck.editing .an-cell.sel .cellparts,
+.pane.filled:hover .cellparts,.pane.filled.active .cellparts{
+  display:flex;}
+.cellpartbtn{font-family:var(--mono);font-size:9.5px;letter-spacing:.04em;
+  background:#0e1926ee;border:1px solid #ffffff2b;border-radius:5px;
+  color:#c9d6e2;padding:3px 7px;cursor:pointer;line-height:1;}
+.cellpartbtn.on{background:var(--cyan-deep);border-color:var(--cyan-deep);
+  color:#fff;}
+.cellpartbtn:hover{border-color:var(--cyan);color:#fff;}
+.cellpartbtn.split{color:#9fb2c2;}
 
 /* picking a card for a cell frame */
 .pickbar{position:fixed;top:var(--chrome-h);left:var(--presrail-w);
@@ -4498,6 +4515,118 @@ _DECK_JS = r"""
     var c=cardEl(ref); if(!c) return null;
     var inner=$('.codeinner',c); if(!inner) return null;
     return stripIds(inner.cloneNode(true));
+  }
+  /* a cell can contribute several things to a slide: its CODE, its
+     FIGURE(s) and its printed OUTPUT. A frame shows one 'part'. */
+  function cellFacets(ref){
+    var card=cardEl(ref);
+    var it=resolveRef(ref);
+    var f={code:!!(it&&it.hasCode),figure:false,output:false};
+    if(card){
+      if(!f.code&&card.querySelector('.codeinner')) f.code=true;
+      var body=$('.cardbody',card);
+      if(body){
+        f.figure=!!body.querySelector('.figframe,.figpager');
+        f.output=!!body.querySelector(
+          'pre.result,pre.stream,.rich,.xr-wrap,.note')
+          ||(!f.figure&&!!(body.textContent||'').trim());
+      }
+    }
+    return f;
+  }
+  function autoPart(f){
+    return f.figure?'figure':(f.output?'output':(f.code?'code':'body'));
+  }
+  function hasFacet(f,part){
+    return (part==='code'&&f.code)||(part==='figure'&&f.figure)
+      ||(part==='output'&&f.output);
+  }
+  function partOf(a){
+    var f=cellFacets(a.ref);
+    /* honor the chosen part only if the cell STILL has it (a refresh may
+       have removed the figure/output) — else fall back to auto */
+    if(a.part&&a.part!=='auto'&&hasFacet(f,a.part)) return a.part;
+    return autoPart(f);
+  }
+  function framePart(ref,part){
+    var f=cellFacets(ref);
+    if(!part||part==='auto'||!hasFacet(f,part)) part=autoPart(f);
+    if(part==='code') return cloneCode(ref)||cloneBody(ref);
+    var b=cloneBody(ref);
+    if(!b) return cloneCode(ref);
+    if(part==='figure'){
+      $$('.xr-wrap,pre.result,pre.stream,.rich,details.alsoprinted',b)
+        .forEach(function(n){if(n.parentNode) n.parentNode.removeChild(n);});
+    } else if(part==='output'){
+      $$('.figframe,.figpager',b).forEach(function(n){
+        if(n.parentNode) n.parentNode.removeChild(n);});
+    }
+    return b;
+  }
+  function facetList(ref){
+    var f=cellFacets(ref),out=[];
+    if(f.figure) out.push('figure');
+    if(f.output) out.push('output');
+    if(f.code) out.push('code');
+    return out;
+  }
+  /* split a frame into two adjacent frames — one per part (e.g. the
+     figure beside its code), each labelled */
+  function splitFrame(ai){
+    var s=pres.slides[cur]; if(!s) return;
+    var a=(s.annots||[])[ai]; if(!a||a.k!=='cell'||!a.ref) return;
+    var facs=facetList(a.ref); if(facs.length<2) return;
+    var cur0=partOf(a);
+    var other=facs.filter(function(x){return x!==cur0;})[0];
+    a.part=cur0;
+    var w=a.w||46,h=a.h||56,x=a.x||6,y=a.y||6;
+    /* split WITHIN the frame's own bounds so the two never overflow or
+       overlap: side by side if wide enough, otherwise stacked */
+    var half=(w-2)/2;
+    if(half>=16){
+      a.w=half;
+      s.annots.push({k:'cell',ref:a.ref,part:other,
+        x:x+half+2,y:y,w:w-half-2,h:h});
+    } else {
+      var hh=Math.max(16,(h-2)/2);
+      a.h=hh;
+      s.annots.push({k:'cell',ref:a.ref,part:other,
+        x:x,y:y+hh+2,w:w,h:h-hh-2>=16?h-hh-2:hh});
+    }
+    markDirty();refresh();
+  }
+  /* the code/figure/output picker shown on a filled frame (+ split) */
+  function buildPartChooser(s,ai){
+    var a=(s.annots||[])[ai]; if(!a||!a.ref) return null;
+    var facs=facetList(a.ref); if(facs.length<2) return null;
+    var curp=partOf(a);
+    var box=document.createElement('div');box.className='cellparts';
+    /* let draw tools (edit mode) still start a shape over the button;
+       in the builder (create) or select tool the button always acts */
+    function guardDown(e){if(mode!=='edit'||tool==='select') e.stopPropagation();}
+    function armed(){return mode!=='edit'||tool==='select';}
+    facs.forEach(function(fp){
+      var b=document.createElement('button');
+      b.className='cellpartbtn'+(fp===curp?' on':'');
+      b.textContent=fp;
+      b.title='Show the '+fp+' in this frame';
+      b.addEventListener('mousedown',guardDown);
+      b.addEventListener('click',function(e){
+        if(!armed()) return;
+        e.stopPropagation();
+        if(partOf(a)===fp&&a.part) return;
+        a.part=fp;markDirty();refresh();});
+      box.appendChild(b);
+    });
+    var sp=document.createElement('button');
+    sp.className='cellpartbtn split';sp.innerHTML='&#9707; split';
+    sp.title='Split into two frames — one for each part';
+    sp.addEventListener('mousedown',guardDown);
+    sp.addEventListener('click',function(e){
+      if(!armed()) return;
+      e.stopPropagation();splitFrame(ai);});
+    box.appendChild(sp);
+    return box;
   }
   function typeset(el){
     if(window.MathJax&&MathJax.typesetPromise){
@@ -4985,18 +5114,16 @@ _DECK_JS = r"""
           chT.className='an-cellhead-t';
           chT.textContent=it.title;
           ch.appendChild(chT);
+          var pt0=partOf(a),facs0=facetList(it.ns);
+          if(facs0.length>1||pt0==='code'){
+            var pl=document.createElement('span');
+            pl.className='an-cellpart';pl.textContent=pt0;
+            ch.appendChild(pl);
+          }
           if(multiNb()) ch.appendChild(nbChip('spane-nb',it.nb));
           c.appendChild(ch);
-          var b=cloneBody(it.ns);
+          var b=framePart(it.ns,a.part);
           if(b){
-            if(b.querySelector('.figframe')){
-              /* a slide frame wants the plot(s), not the printed
-                 reprs that came with them */
-              $$('.xr-wrap,pre.result,pre.stream,.rich,'
-                +'details.alsoprinted',b).forEach(function(n){
-                if(n.parentNode) n.parentNode.removeChild(n);
-              });
-            }
             if(a.ts) b.style.zoom=a.ts;
             c.appendChild(b);
           }
@@ -5020,6 +5147,8 @@ _DECK_JS = r"""
               if(tool!=='select') return;
               e.stopPropagation();startPick(i);});
             c.appendChild(rb);
+            var pc=buildPartChooser(s,i);
+            if(pc) c.appendChild(pc);
           }
         } else if(editing){
           var pb=document.createElement('button');
@@ -5882,26 +6011,26 @@ _DECK_JS = r"""
       p.style.width=(a.w||10)+'%';p.style.height=(a.h||10)+'%';
       if(it){
         /* render the frame EXACTLY as it appears on the slide: the real
-           card (figure/note) with its title header, reprs stripped when
-           there's a figure — no faint image + overlaid label */
+           card content for the chosen part (code / figure / output) */
         var frame=document.createElement('div');frame.className='an-cell';
         var ch=document.createElement('div');ch.className='an-cellhead';
         var chT=document.createElement('span');
         chT.className='an-cellhead-t';chT.textContent=it.title;
         ch.appendChild(chT);
+        var pt0=partOf(a),facs0=facetList(it.ns);
+        if(facs0.length>1||pt0==='code'){
+          var pl=document.createElement('span');
+          pl.className='an-cellpart';pl.textContent=pt0;
+          ch.appendChild(pl);
+        }
         if(multiNb()) ch.appendChild(nbChip('spane-nb',it.nb));
         frame.appendChild(ch);
-        var b=cloneBody(it.ns);
-        if(b){
-          if(b.querySelector('.figframe'))
-            $$('.xr-wrap,pre.result,pre.stream,.rich,'
-              +'details.alsoprinted',b).forEach(function(n){
-              if(n.parentNode) n.parentNode.removeChild(n);});
-          if(a.ts) b.style.zoom=a.ts;
-          frame.appendChild(b);
-        }
+        var b=framePart(it.ns,a.part);
+        if(b){if(a.ts) b.style.zoom=a.ts;frame.appendChild(b);}
         p.title=it.nb+' — '+it.title;
         p.appendChild(frame);
+        var pc=buildPartChooser(s,ai);
+        if(pc) p.appendChild(pc);
       } else {
         var t=document.createElement('span');t.className='pane-t';
         t.textContent=a.ref?('missing: '+a.ref)
@@ -7426,6 +7555,9 @@ def _self_test() -> None:
     assert 'id="layout-row"' in out and "buildSlideEditor" in out
     # decluttered builder: no repeated name label, no verbose hints
     assert "dc-controls" in out
+    # a frame can show a cell's code / figure / output part, and split
+    assert "framePart" in out and "cellFacets" in out
+    assert "buildPartChooser" in out and "splitFrame" in out
     assert 'data-anchor="clim"' in out and 'data-anchor="cell:md1"' in out
     assert '"stem": "demo"' in out or '"stem":"demo"' in out
     # markdown notes: bullets + bold survive, math left for MathJax
