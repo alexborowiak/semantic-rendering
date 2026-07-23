@@ -88,6 +88,7 @@ import argparse
 import ast
 import base64
 import html
+import html.parser
 import http.server
 import io
 import json
@@ -942,6 +943,108 @@ def render_raw(nb: dict) -> str:
     return "".join(parts) or '<p class="rawempty">Empty notebook.</p>'
 
 
+_MD_HTMLBLOCK_RE = re.compile(r"^\s*<[a-zA-Z!/]", re.M)
+
+# Allowlist sanitizer: parse the fragment and re-emit ONLY known-safe
+# tags/attributes, so nothing is reconstructed from deletion. This is
+# the safe approach — regex "strip the bad bits" sanitizers are
+# defeated by split tags, unquoted attrs and encoded URLs.
+_ALLOWED_TAGS = {
+    "p", "br", "hr", "span", "div", "strong", "b", "em", "i", "u", "s",
+    "del", "ins", "code", "pre", "blockquote", "h1", "h2", "h3", "h4",
+    "h5", "h6", "ul", "ol", "li", "dl", "dt", "dd", "a", "img", "sub",
+    "sup", "small", "mark", "abbr", "kbd", "samp", "var", "table",
+    "thead", "tbody", "tfoot", "tr", "td", "th", "caption", "colgroup",
+    "col", "figure", "figcaption",
+}
+_VOID_TAGS = {"br", "hr", "img", "col"}
+# tags whose CONTENT is dropped, not just the tag
+_DROP_CONTENT_TAGS = {"script", "style", "template", "noscript",
+                      "title", "textarea", "iframe", "xmp"}
+_URL_ATTRS = {"href", "src"}
+_ALLOWED_ATTRS = {
+    "class", "style", "title", "alt", "align", "width", "height",
+    "colspan", "rowspan", "scope", "href", "src", "start", "type",
+    "lang", "dir",
+}
+_STYLE_BAD_RE = re.compile(
+    r"(javascript:|expression\s*\(|url\s*\()", re.I)
+_URL_SCHEME_RE = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.\-]*):")
+
+
+def _url_ok(val: str) -> bool:
+    # strip entities + all whitespace/control chars (browsers do before
+    # resolving the scheme, so "javas\ncript:" must be caught)
+    v = re.sub(r"[\x00-\x20]+", "", html.unescape(val))
+    m = _URL_SCHEME_RE.match(v)
+    if not m:
+        return True                       # relative / fragment / query
+    scheme = m.group(1).lower()
+    if scheme in ("http", "https", "mailto", "tel"):
+        return True
+    return v.lower().startswith("data:image/")
+
+
+class _HtmlSanitizer(html.parser.HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.out: list[str] = []
+        self.skip = 0
+
+    def _emit_open(self, tag, attrs, selfclose):
+        kept = []
+        for k, v in attrs:
+            k = k.lower()
+            if k not in _ALLOWED_ATTRS or k.startswith("on"):
+                continue
+            v = v or ""
+            if k in _URL_ATTRS and not _url_ok(v):
+                continue
+            if k == "style" and _STYLE_BAD_RE.search(v):
+                continue
+            kept.append(f' {k}="{html.escape(v, quote=True)}"')
+        slash = "/" if (selfclose or tag in _VOID_TAGS) else ""
+        self.out.append(f"<{tag}{''.join(kept)}{slash}>")
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag in _DROP_CONTENT_TAGS:
+            self.skip += 1
+            return
+        if self.skip or tag not in _ALLOWED_TAGS:
+            return
+        self._emit_open(tag, attrs, False)
+
+    def handle_startendtag(self, tag, attrs):
+        tag = tag.lower()
+        if tag in _DROP_CONTENT_TAGS or self.skip or tag not in _ALLOWED_TAGS:
+            return
+        self._emit_open(tag, attrs, True)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag in _DROP_CONTENT_TAGS:
+            if self.skip:
+                self.skip -= 1
+            return
+        if self.skip or tag not in _ALLOWED_TAGS or tag in _VOID_TAGS:
+            return
+        self.out.append(f"</{tag}>")
+
+    def handle_data(self, data):
+        if not self.skip:
+            self.out.append(html.escape(data))
+
+
+def _sanitize_html(fragment: str) -> str:
+    """Jupyter-style raw HTML in markdown, re-emitted from an allowlist
+    of safe tags/attributes so no active content can survive."""
+    s = _HtmlSanitizer()
+    s.feed(fragment)
+    s.close()
+    return "".join(s.out)
+
+
 def md_to_html(text: str) -> str:
     def inline(s: str) -> str:
         s = _MD_CODE_RE.sub(r"<code>\1</code>", s)
@@ -950,10 +1053,16 @@ def md_to_html(text: str) -> str:
         return s
 
     out: list[str] = []
-    for block in re.split(r"\n\s*\n", html.escape(text)):
-        lines = [ln.rstrip() for ln in block.splitlines() if ln.strip()]
-        if not lines:
+    for block in re.split(r"\n\s*\n", text):
+        raw_lines = [ln.rstrip() for ln in block.splitlines()
+                     if ln.strip()]
+        if not raw_lines:
             continue
+        # blocks that ARE html render as html (like Jupyter), sanitized
+        if _MD_HTMLBLOCK_RE.match(raw_lines[0]):
+            out.append(_sanitize_html("\n".join(raw_lines)))
+            continue
+        lines = [html.escape(ln) for ln in raw_lines]
         if all(_MD_BULLET_RE.match(ln) for ln in lines):
             lis = "".join(
                 f"<li>{inline(_MD_BULLET_RE.sub('', ln))}</li>" for ln in lines)
@@ -1071,8 +1180,19 @@ def render_item(item: Item) -> str:
         id_tag = f'<span class="nodeid">{html.escape(item.node_id)}</span>'
 
     body = out_html
+    htmlsrc = ""
     if item.is_note:
         body = f'<div class="note">{md_to_html(item.caption)}</div>'
+        # notes containing raw HTML render it, with a source toggle.
+        # kept OUTSIDE .cardbody so a long-note clamp can't clip it.
+        if _MD_HTMLBLOCK_RE.search(item.caption):
+            htmlsrc = (
+                '<pre class="note-src code"><code>'
+                f'{html.escape(item.caption)}</code></pre>'
+                '<button class="htmltoggle">'
+                '<span class="chev">&#8250;</span>'
+                '<span class="ht-show">Show raw HTML</span>'
+                '<span class="ht-hide">Show rendered</span></button>')
         caption = ""
 
     return (
@@ -1086,7 +1206,7 @@ def render_item(item: Item) -> str:
         f'{html.escape(item.title)}</h3>'
         f'{id_tag}</header>'
         f'<div class="cardbody">{body}</div>'
-        f'{caption}{prov}{code_block}</article>')
+        f'{htmlsrc}{caption}{prov}{code_block}</article>')
 
 
 def render_nav(doc: Document) -> str:
@@ -1510,6 +1630,24 @@ body{margin:0;font-family:var(--sans);color:var(--ink);
   cursor:pointer;}
 .mdmore:hover{border-color:var(--cyan);color:var(--ink);}
 
+/* notes with raw HTML: rendered by default, source behind a toggle */
+.note-src{display:none;margin:9px 0 0;}
+.card.showhtml .cardbody>.note{display:none;}
+.card.showhtml .note-src{display:block;}
+.htmltoggle{font-family:var(--mono);font-size:11px;
+  letter-spacing:.05em;color:var(--ink-3);background:none;border:none;
+  cursor:pointer;padding:2px 6px;margin-top:9px;display:inline-flex;
+  align-items:center;gap:7px;border-radius:5px;transition:color .15s;}
+.htmltoggle:hover{color:var(--cyan-deep);}
+.htmltoggle .chev{display:inline-block;transition:transform .2s;
+  font-size:14px;}
+.htmltoggle .ht-hide{display:none;}
+.card.showhtml .htmltoggle .chev{transform:rotate(90deg);}
+.card.showhtml .htmltoggle .ht-show{display:none;}
+.card.showhtml .htmltoggle .ht-hide{display:inline;}
+.an-cell .htmltoggle,.an-cell .note-src,
+.spane .htmltoggle,.spane .note-src{display:none;}
+
 pre.result,pre.stream,pre.error{font-family:var(--mono);font-size:12px;
   background:var(--paper-2);border:1px solid var(--paper-3);
   border-radius:7px;padding:11px 13px;overflow:auto;margin:0;line-height:1.45;}
@@ -1744,7 +1882,14 @@ body.presrail-min{--presrail-w:46px;}
   z-index:90;display:flex;flex-direction:column;background:#0a141d;
   border-bottom:1px solid #ffffff14;}
 .appbar{display:flex;align-items:center;gap:8px;height:var(--appbar-h);
-  padding:0 12px 0 0;border-bottom:1px solid #ffffff0d;}
+  padding:0 12px 0 0;border-bottom:1px solid #ffffff0d;
+  overflow-x:auto;scrollbar-width:none;}
+/* buttons keep one line and one uniform size no matter how narrow the
+   bar gets (the builder can squeeze it) or what glyph they hold — the
+   bar scrolls instead, and a fixed height stops content stretching */
+.appbar .toggle,.appbar .appbar-link,.appbar .tab-openbtn{
+  flex:none;white-space:nowrap;height:30px;box-sizing:border-box;
+  padding-top:0;padding-bottom:0;line-height:1;}
 .apptop-brand{font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;
   text-transform:uppercase;color:var(--cyan);display:flex;align-items:center;
   align-self:stretch;padding:0 14px;border-right:1px solid #ffffff10;
@@ -2116,6 +2261,24 @@ body.light .film-row.current{background:#39a9c022;
 body.light .film-mini{color:var(--ink-3);}
 body.light .film-mini:hover{background:#00000012;color:var(--ink);}
 body.light .film-label .film-n{color:var(--ink-3);}
+/* slide-editing chrome flips too; the slide surface itself stays the
+   dark presentation design in every theme */
+body.light .deck.editing{background:#dfe6ec;}
+body.light .deck.creating{background:#f4f7fa;}
+body.light .edit-tools{background:#f4f7fa;
+  border-bottom-color:var(--line);}
+body.light .edit-tools .dbtn{background:#fff;border-color:var(--line);
+  color:var(--ink-2);}
+body.light .edit-tools .dbtn:hover{border-color:var(--cyan);
+  color:var(--ink);}
+body.light .edit-tools .dbtn.et[aria-pressed="true"],
+body.light .edit-tools .dbtn.etm[aria-pressed="true"]{
+  background:var(--cyan-deep);border-color:var(--cyan-deep);
+  color:#fff;}
+body.light .et-label{color:#a06a1e;}
+body.light .et-hint{color:var(--ink-3);}
+body.light select#fmt-font{background:#fff;border-color:var(--line);
+  color:var(--ink);}
 /* document rail (section nav aka Overview + analysis graph) */
 body.light .rail{background:#f2f5f8;color:var(--ink-2);
   border-right-color:var(--line);}
@@ -2192,6 +2355,8 @@ body:not(.light) .xr-wrap,body:not(.light) .rich{background:#fbfcfd;
 body:not(.light) .codewrap{border-top-color:#ffffff14;}
 body:not(.light) .codetoggle{color:#8ba0b2;}
 body:not(.light) .codetoggle:hover{color:#5fc3d8;}
+body:not(.light) .htmltoggle{color:#8ba0b2;}
+body:not(.light) .htmltoggle:hover{color:#5fc3d8;}
 body:not(.light) .steplabel,body:not(.light) .ct-steps{color:#8ba0b2;}
 body:not(.light) details.alsoprinted{border-color:#ffffff1f;}
 body:not(.light) details.alsoprinted>summary{color:#8ba0b2;}
@@ -2535,6 +2700,15 @@ _JS = r"""
     pages[nx].classList.add('current');
     var ct=pg.querySelector('.fp-count');
     if(ct) ct.textContent=(nx+1)+' / '+pages.length;
+  },true);
+
+  /* ---- raw-HTML notes: toggle rendered <-> source ----------------- */
+  document.addEventListener('click',function(e){
+    var b=e.target.closest&&e.target.closest('.htmltoggle');
+    if(!b) return;
+    e.preventDefault();e.stopPropagation();
+    var card=b.closest('.card');
+    if(card) card.classList.toggle('showhtml');
   },true);
 
   /* ---- presentations rail: full -> icons -> hidden (edge handle
@@ -3333,7 +3507,7 @@ _DECK_CSS = r"""
 .deck{position:fixed;inset:0;z-index:100;background:#0b141d;color:#dce6ee;
   display:flex;flex-direction:column;font-family:var(--sans);}
 .deck[hidden]{display:none!important;}
-.deck [hidden]{display:none!important;}
+.deck [hidden]:not(.et-fmt){display:none!important;}
 body.deck-open{overflow:hidden;}
 
 .deck-top{display:flex;align-items:center;gap:9px;padding:10px 18px;
@@ -3606,9 +3780,12 @@ body.creating-docs .card:hover{outline:2px solid var(--cyan);
   left:calc(var(--presrail-w) + min(var(--dc-w),94vw) - 1px);}
 .dc-resize:hover,.dc-resize.on{background:#39a9c066;}
 @media(max-width:860px){.dc-resize{display:none;}}
-.dc-block{padding:14px 14px 12px;border-bottom:1px solid #ffffff14;}
-.dc-block.dc-film{flex:1;display:flex;flex-direction:column;min-height:120px;
-  border-bottom:none;padding-bottom:8px;}
+.dc-block{padding:10px 14px 9px;border-bottom:1px solid #ffffff14;}
+/* the slides list is the main working area — give it the lion's share
+   and let it be the panel's primary scroller */
+.dc-block.dc-film{flex:1 1 auto;display:flex;flex-direction:column;
+  min-height:240px;border-bottom:none;padding-bottom:8px;}
+.dc-block.dc-film .film-list{flex:1;overflow-y:auto;min-height:0;}
 .dc-label{display:block;font-family:var(--mono);font-size:9.5px;
   letter-spacing:.16em;text-transform:uppercase;color:#7e93a4;
   margin-bottom:8px;}
@@ -3697,9 +3874,6 @@ select#fmt-font{background:#16273a;border:1px solid #ffffff22;
 select#fmt-font[hidden]{display:none;}
 .dbtn.etm[aria-pressed="true"]{background:var(--cyan-deep);
   border-color:var(--cyan-deep);color:#fff;}
-.et-fmt{display:flex;align-items:center;gap:6px;padding-left:10px;
-  margin-left:3px;border-left:1px solid #ffffff1c;flex-wrap:wrap;}
-.et-fmt[hidden]{display:none!important;}
 .sw{width:18px;height:18px;border-radius:50%;padding:0;cursor:pointer;
   border:2px solid #ffffff30;}
 .sw[aria-pressed="true"]{border-color:#fff;
@@ -3837,8 +4011,11 @@ body.picking .card{cursor:copy;}
 body.picking .card:hover{outline:2px solid #fff;outline-offset:2px;}
 
 /* pane editor: the current slide as clickable regions */
+/* the placement preview is a thumbnail, not the main event — cap it so
+   it can't grow tall on a wide/resized panel and squeeze the slide list */
 .pane-editor{aspect-ratio:16/9;display:grid;gap:6px;background:#0b141d;
-  border:1px solid #ffffff22;border-radius:8px;padding:6px;margin-top:9px;}
+  border:1px solid #ffffff22;border-radius:8px;padding:6px;
+  margin:8px auto 0;width:100%;max-width:300px;}
 .pane-editor.full{grid-template-columns:1fr;grid-template-rows:1fr;}
 .pane-editor.halves{grid-template-columns:1fr 1fr;grid-template-rows:1fr;}
 .pane-editor.quarters{grid-template-columns:1fr 1fr;
@@ -6998,6 +7175,11 @@ def _self_test() -> None:
             {"cell_type": "code", "id": "c-one",
              "source": "result = rescale(data)",
              "outputs": []},
+            {"cell_type": "markdown", "id": "md-html",
+             "source": "<h1 style='color:cyan'> Universal </h1>\n\n"
+                       "plain paragraph\n\n"
+                       "<script>alert(1)</script>\n\n"
+                       "<a href='javascript:alert(2)'>x</a>"},
         ]
     }
     doc = parse_notebook(nb)
@@ -7059,6 +7241,31 @@ def _self_test() -> None:
     assert _title_from_code(
         "import x\n\ndef a():\n    pass\n\ndef b():\n    pass") \
         == ("2 functions + code", False)
+    # raw HTML in markdown renders (allowlist-sanitized) with a toggle
+    assert '<h1 style="color:cyan"> Universal </h1>' in out
+    assert "<p>plain paragraph</p>" in out
+    # the rendered note must not contain a live script tag (the escaped
+    # source lives separately in the note-src <pre>)
+    assert '<div class="note"><h1 style="color:cyan"> Universal ' in out
+    assert 'class="note-src code"' in out and "htmltoggle" in out
+    assert "Show raw HTML" in out
+    # allowlist reconstruction: only safe tags/attrs come back out
+    assert _sanitize_html('<img src=x onerror=alert(1)>') \
+        == '<img src="x"/>'
+    # every bypass the adversarial review found must be closed:
+    assert "script" not in _sanitize_html(     # split-tag reassembly
+        '<scr<embed>ipt>alert(1)</scr<embed>ipt>').lower()
+    assert _sanitize_html(                      # unquoted js URL
+        '<a href=javascript:alert(1)>x</a>') == '<a>x</a>'
+    assert _sanitize_html(                      # newline-split scheme
+        "<a href='javas\ncript:alert(1)'>x</a>") == '<a>x</a>'
+    assert "formaction" not in _sanitize_html(  # non-href URL sink
+        '<button formaction="javascript:alert(1)">go</button>')
+    assert "srcdoc" not in _sanitize_html(      # iframe + srcdoc
+        '<iframe srcdoc="&lt;script&gt;x&lt;/script&gt;"></iframe>')
+    assert _sanitize_html('<a href="/rel/ok">y</a>') \
+        == '<a href="/rel/ok">y</a>'           # safe URLs kept
+
     # chrome: TOC toggle, resizable builder, dark document, tab refresh
     assert 'id="menubtn"' in out and "tocshow" in out
     assert 'id="dc-resize"' in out and "--dc-w" in out

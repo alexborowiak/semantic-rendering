@@ -242,6 +242,24 @@ body{margin:0;font-family:var(--sans);color:var(--ink);
   cursor:pointer;}
 .mdmore:hover{border-color:var(--cyan);color:var(--ink);}
 
+/* notes with raw HTML: rendered by default, source behind a toggle */
+.note-src{display:none;margin:9px 0 0;}
+.card.showhtml .cardbody>.note{display:none;}
+.card.showhtml .note-src{display:block;}
+.htmltoggle{font-family:var(--mono);font-size:11px;
+  letter-spacing:.05em;color:var(--ink-3);background:none;border:none;
+  cursor:pointer;padding:2px 6px;margin-top:9px;display:inline-flex;
+  align-items:center;gap:7px;border-radius:5px;transition:color .15s;}
+.htmltoggle:hover{color:var(--cyan-deep);}
+.htmltoggle .chev{display:inline-block;transition:transform .2s;
+  font-size:14px;}
+.htmltoggle .ht-hide{display:none;}
+.card.showhtml .htmltoggle .chev{transform:rotate(90deg);}
+.card.showhtml .htmltoggle .ht-show{display:none;}
+.card.showhtml .htmltoggle .ht-hide{display:inline;}
+.an-cell .htmltoggle,.an-cell .note-src,
+.spane .htmltoggle,.spane .note-src{display:none;}
+
 pre.result,pre.stream,pre.error{font-family:var(--mono);font-size:12px;
   background:var(--paper-2);border:1px solid var(--paper-3);
   border-radius:7px;padding:11px 13px;overflow:auto;margin:0;line-height:1.45;}
@@ -364,7 +382,14 @@ body.presrail-min{--presrail-w:46px;}
   z-index:90;display:flex;flex-direction:column;background:#0a141d;
   border-bottom:1px solid #ffffff14;}
 .appbar{display:flex;align-items:center;gap:8px;height:var(--appbar-h);
-  padding:0 12px 0 0;border-bottom:1px solid #ffffff0d;}
+  padding:0 12px 0 0;border-bottom:1px solid #ffffff0d;
+  overflow-x:auto;scrollbar-width:none;}
+/* buttons keep one line and one uniform size no matter how narrow the
+   bar gets (the builder can squeeze it) or what glyph they hold — the
+   bar scrolls instead, and a fixed height stops content stretching */
+.appbar .toggle,.appbar .appbar-link,.appbar .tab-openbtn{
+  flex:none;white-space:nowrap;height:30px;box-sizing:border-box;
+  padding-top:0;padding-bottom:0;line-height:1;}
 .apptop-brand{font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;
   text-transform:uppercase;color:var(--cyan);display:flex;align-items:center;
   align-self:stretch;padding:0 14px;border-right:1px solid #ffffff10;
@@ -736,6 +761,24 @@ body.light .film-row.current{background:#39a9c022;
 body.light .film-mini{color:var(--ink-3);}
 body.light .film-mini:hover{background:#00000012;color:var(--ink);}
 body.light .film-label .film-n{color:var(--ink-3);}
+/* slide-editing chrome flips too; the slide surface itself stays the
+   dark presentation design in every theme */
+body.light .deck.editing{background:#dfe6ec;}
+body.light .deck.creating{background:#f4f7fa;}
+body.light .edit-tools{background:#f4f7fa;
+  border-bottom-color:var(--line);}
+body.light .edit-tools .dbtn{background:#fff;border-color:var(--line);
+  color:var(--ink-2);}
+body.light .edit-tools .dbtn:hover{border-color:var(--cyan);
+  color:var(--ink);}
+body.light .edit-tools .dbtn.et[aria-pressed="true"],
+body.light .edit-tools .dbtn.etm[aria-pressed="true"]{
+  background:var(--cyan-deep);border-color:var(--cyan-deep);
+  color:#fff;}
+body.light .et-label{color:#a06a1e;}
+body.light .et-hint{color:var(--ink-3);}
+body.light select#fmt-font{background:#fff;border-color:var(--line);
+  color:var(--ink);}
 /* document rail (section nav aka Overview + analysis graph) */
 body.light .rail{background:#f2f5f8;color:var(--ink-2);
   border-right-color:var(--line);}
@@ -812,6 +855,8 @@ body:not(.light) .xr-wrap,body:not(.light) .rich{background:#fbfcfd;
 body:not(.light) .codewrap{border-top-color:#ffffff14;}
 body:not(.light) .codetoggle{color:#8ba0b2;}
 body:not(.light) .codetoggle:hover{color:#5fc3d8;}
+body:not(.light) .htmltoggle{color:#8ba0b2;}
+body:not(.light) .htmltoggle:hover{color:#5fc3d8;}
 body:not(.light) .steplabel,body:not(.light) .ct-steps{color:#8ba0b2;}
 body:not(.light) details.alsoprinted{border-color:#ffffff1f;}
 body:not(.light) details.alsoprinted>summary{color:#8ba0b2;}
@@ -894,7 +939,7 @@ body:not(.light) .welcome-links a{color:#5fc3d8;}
 .deck{position:fixed;inset:0;z-index:100;background:#0b141d;color:#dce6ee;
   display:flex;flex-direction:column;font-family:var(--sans);}
 .deck[hidden]{display:none!important;}
-.deck [hidden]{display:none!important;}
+.deck [hidden]:not(.et-fmt){display:none!important;}
 body.deck-open{overflow:hidden;}
 
 .deck-top{display:flex;align-items:center;gap:9px;padding:10px 18px;
@@ -1167,9 +1212,12 @@ body.creating-docs .card:hover{outline:2px solid var(--cyan);
   left:calc(var(--presrail-w) + min(var(--dc-w),94vw) - 1px);}
 .dc-resize:hover,.dc-resize.on{background:#39a9c066;}
 @media(max-width:860px){.dc-resize{display:none;}}
-.dc-block{padding:14px 14px 12px;border-bottom:1px solid #ffffff14;}
-.dc-block.dc-film{flex:1;display:flex;flex-direction:column;min-height:120px;
-  border-bottom:none;padding-bottom:8px;}
+.dc-block{padding:10px 14px 9px;border-bottom:1px solid #ffffff14;}
+/* the slides list is the main working area — give it the lion's share
+   and let it be the panel's primary scroller */
+.dc-block.dc-film{flex:1 1 auto;display:flex;flex-direction:column;
+  min-height:240px;border-bottom:none;padding-bottom:8px;}
+.dc-block.dc-film .film-list{flex:1;overflow-y:auto;min-height:0;}
 .dc-label{display:block;font-family:var(--mono);font-size:9.5px;
   letter-spacing:.16em;text-transform:uppercase;color:#7e93a4;
   margin-bottom:8px;}
@@ -1258,9 +1306,6 @@ select#fmt-font{background:#16273a;border:1px solid #ffffff22;
 select#fmt-font[hidden]{display:none;}
 .dbtn.etm[aria-pressed="true"]{background:var(--cyan-deep);
   border-color:var(--cyan-deep);color:#fff;}
-.et-fmt{display:flex;align-items:center;gap:6px;padding-left:10px;
-  margin-left:3px;border-left:1px solid #ffffff1c;flex-wrap:wrap;}
-.et-fmt[hidden]{display:none!important;}
 .sw{width:18px;height:18px;border-radius:50%;padding:0;cursor:pointer;
   border:2px solid #ffffff30;}
 .sw[aria-pressed="true"]{border-color:#fff;
@@ -1398,8 +1443,11 @@ body.picking .card{cursor:copy;}
 body.picking .card:hover{outline:2px solid #fff;outline-offset:2px;}
 
 /* pane editor: the current slide as clickable regions */
+/* the placement preview is a thumbnail, not the main event — cap it so
+   it can't grow tall on a wide/resized panel and squeeze the slide list */
 .pane-editor{aspect-ratio:16/9;display:grid;gap:6px;background:#0b141d;
-  border:1px solid #ffffff22;border-radius:8px;padding:6px;margin-top:9px;}
+  border:1px solid #ffffff22;border-radius:8px;padding:6px;
+  margin:8px auto 0;width:100%;max-width:300px;}
 .pane-editor.full{grid-template-columns:1fr;grid-template-rows:1fr;}
 .pane-editor.halves{grid-template-columns:1fr 1fr;grid-template-rows:1fr;}
 .pane-editor.quarters{grid-template-columns:1fr 1fr;
@@ -5119,6 +5167,15 @@ or just download <code>semantic_render.py</code> and run
     pages[nx].classList.add('current');
     var ct=pg.querySelector('.fp-count');
     if(ct) ct.textContent=(nx+1)+' / '+pages.length;
+  },true);
+
+  /* ---- raw-HTML notes: toggle rendered <-> source ----------------- */
+  document.addEventListener('click',function(e){
+    var b=e.target.closest&&e.target.closest('.htmltoggle');
+    if(!b) return;
+    e.preventDefault();e.stopPropagation();
+    var card=b.closest('.card');
+    if(card) card.classList.toggle('showhtml');
   },true);
 
   /* ---- presentations rail: full -> icons -> hidden (edge handle
