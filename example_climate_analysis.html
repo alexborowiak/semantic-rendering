@@ -1078,6 +1078,21 @@ body.deck-open{overflow:hidden;}
 .vo-full{background:none;border:none;color:#8ba0b2;cursor:pointer;
   font-size:13px;flex:none;padding:2px 5px;border-radius:4px;}
 .vo-full:hover{color:#fff;background:#ffffff14;}
+/* eyeball: hide a step while presenting */
+.vo-eye{background:none;border:none;color:#8ba0b2;cursor:pointer;
+  font-size:12px;flex:none;padding:2px 5px;border-radius:4px;
+  line-height:1;opacity:.75;position:relative;}
+.vo-eye:hover{color:#fff;background:#ffffff14;opacity:1;}
+.vo-eye.off{color:#63758a;}
+.vo-eye.off::after{content:"";position:absolute;left:4px;right:4px;
+  top:calc(50% - 1px);height:1.6px;background:currentColor;
+  transform:rotate(-18deg);border-radius:2px;}
+.vo-step.hidden{opacity:.5;border-style:dashed;}
+.vo-step.hidden .vo-step-t::after{content:" · hidden";
+  color:#8ba0b2;font-family:var(--mono);font-size:10px;
+  letter-spacing:.04em;}
+.vo-xall.on{border-color:var(--cyan);color:#fff;
+  background:#39a9c022;}
 .vo-step-b{display:none;padding:2px 10px 10px;}
 .vo-step.open .vo-step-b{display:block;}
 
@@ -5916,6 +5931,9 @@ or just download <code>semantic_render.py</code> and run
         (o.annots||[]).forEach(function(a){
           if(a.k==='cell'&&a.ref) a.ref=ns(a.ref);
         });
+        /* steps hidden in the code trace (namespaced refs) */
+        if(Array.isArray(s.hidden)&&s.hidden.length)
+          o.hidden=s.hidden.map(ns).filter(Boolean);
         /* legacy pane layouts -> cell frames at the preset rects */
         if(o.layout!=='title'){
           if(PRESETS[o.layout]){
@@ -5943,6 +5961,12 @@ or just download <code>semantic_render.py</code> and run
       var o={};for(var k in it) o[k]=it[k];
       o.nb=stem;o.ns=nsKey(stem,it.anchor);
       ITEMS[o.ns]=o;SHELLITEMS[stem].push(o.ns);
+      /* also resolve by the card slug so decks saved before anchors
+         became positional still find their frames (unchanged cards) */
+      if(it.card){
+        var alias=nsKey(stem,it.card);
+        if(alias!==o.ns&&!ITEMS[alias]) ITEMS[alias]=o;
+      }
     });
     nbPres=nbPres.filter(function(p){return p.origin!==stem;});
     (data.presentations||[]).forEach(function(p){
@@ -6112,8 +6136,23 @@ or just download <code>semantic_render.py</code> and run
      transforms -> plot), deduped, in execution order — one cell per
      screen below the slide. */
   var vGroups=[];
+  var traceShowHidden=false;   /* transient: reveal steps marked hidden */
   var TRACE_COLORS=['#39a9c0','#ff6b57','#f0a848','#46a892',
     '#c98fd0','#5b8dd6'];
+  function hiddenSet(s){
+    var h={};(s&&s.hidden||[]).forEach(function(r){h[r]=1;});return h;
+  }
+  function toggleHidden(s,ns){
+    if(!s) return;
+    s.hidden=s.hidden||[];
+    var i=s.hidden.indexOf(ns);
+    if(i>=0) s.hidden.splice(i,1); else s.hidden.push(ns);
+    markDirty();
+  }
+  function rebuildTrace(){
+    var old=stage.querySelector('.vtrace'); if(!old) return;
+    old.parentNode.replaceChild(buildTrace(pres.slides[cur]),old);
+  }
   function lineageFor(s){
     /* one group per framed card, ordered like the frames sit on the
        slide (row by row, left to right); each group = that card's full
@@ -6179,8 +6218,9 @@ or just download <code>semantic_render.py</code> and run
   function closeVFull(){
     var vf=$('#vfull'); if(vf) vf.hidden=true;
   }
-  function traceStep(st,k,g,multi){
-    var box=document.createElement('div');box.className='vo-step';
+  function traceStep(st,k,g,multi,isHidden,s){
+    var box=document.createElement('div');
+    box.className='vo-step'+(isHidden?' hidden':'');
     var h=document.createElement('button');h.className='vo-step-h';
     h.title='Expand this cell';
     var n=document.createElement('span');n.className='vo-num';
@@ -6193,6 +6233,16 @@ or just download <code>semantic_render.py</code> and run
     var bt=document.createElement('span');bt.className='vo-step-t';
     bt.textContent=st.title;h.appendChild(bt);
     if(multiNb()) h.appendChild(nbChip('spane-nb',st.nb));
+    /* eyeball: hide this step while presenting (persists per slide) */
+    var eye=document.createElement('span');
+    eye.className='vo-eye'+(isHidden?' off':'');
+    eye.innerHTML='&#128065;';
+    eye.title=isHidden
+      ?'Hidden while presenting — click to show it again'
+      :'Hide this step while presenting';
+    eye.addEventListener('click',function(e){
+      e.stopPropagation();toggleHidden(s,st.ns);rebuildTrace();});
+    h.appendChild(eye);
     var fb=document.createElement('span');fb.className='vo-full';
     fb.innerHTML='&#x26F6;';fb.title='View this cell full screen';
     fb.addEventListener('click',function(e){
@@ -6225,12 +6275,25 @@ or just download <code>semantic_render.py</code> and run
       else box.classList.remove('open');
     });
   }
-  function buildTrace(){
-    var multi=vGroups.length>1;
+  function buildTrace(s){
+    var hidden=hiddenSet(s);
+    /* count DISTINCT hidden cells (a shared upstream cell can appear in
+       several plot columns but is one step to the user) */
+    var counted={},nHidden=0;
+    vGroups.forEach(function(g){g.steps.forEach(function(st){
+      if(hidden[st.ns]&&!counted[st.ns]){counted[st.ns]=1;nHidden++;}});});
+    /* the visible groups drive BOTH the plot strip and the columns, so
+       they always line up even when a whole plot's trace is hidden */
+    var visGroups=vGroups.map(function(g){
+      return {g:g,vis:g.steps.filter(function(st){
+        return traceShowHidden||!hidden[st.ns];})};
+    }).filter(function(x){return x.vis.length;});
+    var multi=visGroups.length>1;
     var v=document.createElement('div');v.className='vtrace';
     var tl=document.createElement('div');tl.className='vo-title';
     var ts=document.createElement('span');
-    ts.textContent='code trace — click a step to expand it';
+    ts.textContent='code trace — click a step to expand, '
+      +'the eye to hide it while presenting';
     tl.appendChild(ts);
     var xa=document.createElement('button');xa.className='vo-xall';
     xa.textContent='Expand all';
@@ -6241,14 +6304,28 @@ or just download <code>semantic_render.py</code> and run
     ca.title='Fold every step back down';
     ca.addEventListener('click',function(){setAllSteps(v,false);});
     tl.appendChild(xa);tl.appendChild(ca);
+    if(nHidden){
+      var sh=document.createElement('button');
+      sh.className='vo-xall'+(traceShowHidden?' on':'');
+      sh.textContent=traceShowHidden?'Hide hidden'
+        :('Show hidden ('+nHidden+')');
+      sh.title=traceShowHidden
+        ?'Hide the steps you marked hidden again'
+        :'Reveal the steps you hid — to view them or unhide them';
+      sh.addEventListener('click',function(){
+        traceShowHidden=!traceShowHidden;rebuildTrace();});
+      tl.appendChild(sh);
+    }
     v.appendChild(tl);
     if(multi){
       var strip=document.createElement('div');strip.className='vo-plots';
-      vGroups.forEach(function(g){strip.appendChild(plotThumb(g,true));});
+      visGroups.forEach(function(x){
+        strip.appendChild(plotThumb(x.g,true));});
       v.appendChild(strip);
     }
     var cols=document.createElement('div');cols.className='vo-groups';
-    vGroups.forEach(function(g){
+    visGroups.forEach(function(x){
+      var g=x.g,vis=x.vis;
       var col=document.createElement('div');col.className='vo-col';
       if(multi){
         col.style.borderColor=g.color;
@@ -6259,8 +6336,8 @@ or just download <code>semantic_render.py</code> and run
       var hs=document.createElement('span');
       hs.textContent=g.it.title;h.appendChild(hs);
       col.appendChild(h);
-      g.steps.forEach(function(st,k){
-        col.appendChild(traceStep(st,k,g,multi));
+      vis.forEach(function(st,k){
+        col.appendChild(traceStep(st,k,g,multi,!!hidden[st.ns],s));
       });
       cols.appendChild(col);
     });
@@ -6291,7 +6368,7 @@ or just download <code>semantic_render.py</code> and run
   function renderSlide(){
     var s=pres.slides[cur];
     stage.innerHTML='';
-    vGroups=[];
+    vGroups=[];traceShowHidden=false;
     closeVFull();
     if(!s){
       stage.innerHTML='<div class="slide slide-empty"><p>No slides yet.'
@@ -6327,7 +6404,7 @@ or just download <code>semantic_render.py</code> and run
         page.className='vpage';
         while(stage.firstChild) page.appendChild(stage.firstChild);
         stage.appendChild(page);
-        stage.appendChild(buildTrace());
+        stage.appendChild(buildTrace(s));
         stage.classList.add('scrolly');
       }
     }
@@ -7797,6 +7874,14 @@ or just download <code>semantic_render.py</code> and run
       return;
     }
     var ref=nsKey(shellEl.dataset.nb,card.dataset.anchor);
+    /* already on this slide? repeated clicks must NOT keep adding copies
+       — flash the frame it's in instead of cascading duplicates */
+    if(slideCells(s).some(function(c){return c.a.ref===ref;})){
+      toast('That card is already on this slide');
+      card.classList.add('target-flash');
+      setTimeout(function(){card.classList.remove('target-flash');},700);
+      return;
+    }
     var target=annotByIdx(s,activePane);
     if(!target||target.k!=='cell') activePane=firstEmpty(s);
     if(activePane<0){
@@ -7955,6 +8040,7 @@ or just download <code>semantic_render.py</code> and run
         (s.annots||[]).forEach(function(a){
           if(a.k==='cell'&&a.ref) a.ref=strip(a.ref);
         });
+        if(Array.isArray(s.hidden)) s.hidden=s.hidden.map(strip);
         return s;});
       return c;});
   }

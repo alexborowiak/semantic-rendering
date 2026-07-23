@@ -497,7 +497,16 @@ def _finalize_item(item: Item, used_slugs: set[str],
         for m in members)
     item.item_id = _slug(item.node_id or item.title or "item", used_slugs)
     cid = primary.get("cell_id", "")
-    item.anchor = item.node_id or (f"cell:{cid}" if cid else "") or item.item_id
+    if item.node_id:
+        item.anchor = item.node_id
+    elif cid:
+        item.anchor = f"cell:{cid}"
+    else:
+        # No stable identity (no `#| id:`, no nbformat cell id): anchor by
+        # POSITION, not the title-derived slug. Editing a figure changes
+        # its code-derived title but not its place in the notebook, so a
+        # deck frame keeps pointing at it across a refresh.
+        item.anchor = f"cell:p{primary.get('idx', 0)}"
 
 
 _LAYOUT_PANES = {"full": 1, "halves": 2, "rows": 2, "quarters": 4,
@@ -548,6 +557,10 @@ def _as_presentations(obj: Any) -> list:
                     ann = [a for a in s["annots"] if isinstance(a, dict)]
                     if ann:
                         slide["annots"] = ann
+                if isinstance(s.get("hidden"), list):
+                    hid = [r for r in s["hidden"] if isinstance(r, str) and r]
+                    if hid:
+                        slide["hidden"] = hid
                 slides.append(slide)
             elif s.get("kind") == "card" and s.get("anchor"):   # legacy
                 panes = [s["anchor"]] + [b for b in (s.get("beside") or [])
@@ -3708,6 +3721,21 @@ body.deck-open{overflow:hidden;}
 .vo-full{background:none;border:none;color:#8ba0b2;cursor:pointer;
   font-size:13px;flex:none;padding:2px 5px;border-radius:4px;}
 .vo-full:hover{color:#fff;background:#ffffff14;}
+/* eyeball: hide a step while presenting */
+.vo-eye{background:none;border:none;color:#8ba0b2;cursor:pointer;
+  font-size:12px;flex:none;padding:2px 5px;border-radius:4px;
+  line-height:1;opacity:.75;position:relative;}
+.vo-eye:hover{color:#fff;background:#ffffff14;opacity:1;}
+.vo-eye.off{color:#63758a;}
+.vo-eye.off::after{content:"";position:absolute;left:4px;right:4px;
+  top:calc(50% - 1px);height:1.6px;background:currentColor;
+  transform:rotate(-18deg);border-radius:2px;}
+.vo-step.hidden{opacity:.5;border-style:dashed;}
+.vo-step.hidden .vo-step-t::after{content:" · hidden";
+  color:#8ba0b2;font-family:var(--mono);font-size:10px;
+  letter-spacing:.04em;}
+.vo-xall.on{border-color:var(--cyan);color:#fff;
+  background:#39a9c022;}
 .vo-step-b{display:none;padding:2px 10px 10px;}
 .vo-step.open .vo-step-b{display:block;}
 
@@ -4267,6 +4295,9 @@ _DECK_JS = r"""
         (o.annots||[]).forEach(function(a){
           if(a.k==='cell'&&a.ref) a.ref=ns(a.ref);
         });
+        /* steps hidden in the code trace (namespaced refs) */
+        if(Array.isArray(s.hidden)&&s.hidden.length)
+          o.hidden=s.hidden.map(ns).filter(Boolean);
         /* legacy pane layouts -> cell frames at the preset rects */
         if(o.layout!=='title'){
           if(PRESETS[o.layout]){
@@ -4294,6 +4325,12 @@ _DECK_JS = r"""
       var o={};for(var k in it) o[k]=it[k];
       o.nb=stem;o.ns=nsKey(stem,it.anchor);
       ITEMS[o.ns]=o;SHELLITEMS[stem].push(o.ns);
+      /* also resolve by the card slug so decks saved before anchors
+         became positional still find their frames (unchanged cards) */
+      if(it.card){
+        var alias=nsKey(stem,it.card);
+        if(alias!==o.ns&&!ITEMS[alias]) ITEMS[alias]=o;
+      }
     });
     nbPres=nbPres.filter(function(p){return p.origin!==stem;});
     (data.presentations||[]).forEach(function(p){
@@ -4463,8 +4500,23 @@ _DECK_JS = r"""
      transforms -> plot), deduped, in execution order — one cell per
      screen below the slide. */
   var vGroups=[];
+  var traceShowHidden=false;   /* transient: reveal steps marked hidden */
   var TRACE_COLORS=['#39a9c0','#ff6b57','#f0a848','#46a892',
     '#c98fd0','#5b8dd6'];
+  function hiddenSet(s){
+    var h={};(s&&s.hidden||[]).forEach(function(r){h[r]=1;});return h;
+  }
+  function toggleHidden(s,ns){
+    if(!s) return;
+    s.hidden=s.hidden||[];
+    var i=s.hidden.indexOf(ns);
+    if(i>=0) s.hidden.splice(i,1); else s.hidden.push(ns);
+    markDirty();
+  }
+  function rebuildTrace(){
+    var old=stage.querySelector('.vtrace'); if(!old) return;
+    old.parentNode.replaceChild(buildTrace(pres.slides[cur]),old);
+  }
   function lineageFor(s){
     /* one group per framed card, ordered like the frames sit on the
        slide (row by row, left to right); each group = that card's full
@@ -4530,8 +4582,9 @@ _DECK_JS = r"""
   function closeVFull(){
     var vf=$('#vfull'); if(vf) vf.hidden=true;
   }
-  function traceStep(st,k,g,multi){
-    var box=document.createElement('div');box.className='vo-step';
+  function traceStep(st,k,g,multi,isHidden,s){
+    var box=document.createElement('div');
+    box.className='vo-step'+(isHidden?' hidden':'');
     var h=document.createElement('button');h.className='vo-step-h';
     h.title='Expand this cell';
     var n=document.createElement('span');n.className='vo-num';
@@ -4544,6 +4597,16 @@ _DECK_JS = r"""
     var bt=document.createElement('span');bt.className='vo-step-t';
     bt.textContent=st.title;h.appendChild(bt);
     if(multiNb()) h.appendChild(nbChip('spane-nb',st.nb));
+    /* eyeball: hide this step while presenting (persists per slide) */
+    var eye=document.createElement('span');
+    eye.className='vo-eye'+(isHidden?' off':'');
+    eye.innerHTML='&#128065;';
+    eye.title=isHidden
+      ?'Hidden while presenting — click to show it again'
+      :'Hide this step while presenting';
+    eye.addEventListener('click',function(e){
+      e.stopPropagation();toggleHidden(s,st.ns);rebuildTrace();});
+    h.appendChild(eye);
     var fb=document.createElement('span');fb.className='vo-full';
     fb.innerHTML='&#x26F6;';fb.title='View this cell full screen';
     fb.addEventListener('click',function(e){
@@ -4576,12 +4639,25 @@ _DECK_JS = r"""
       else box.classList.remove('open');
     });
   }
-  function buildTrace(){
-    var multi=vGroups.length>1;
+  function buildTrace(s){
+    var hidden=hiddenSet(s);
+    /* count DISTINCT hidden cells (a shared upstream cell can appear in
+       several plot columns but is one step to the user) */
+    var counted={},nHidden=0;
+    vGroups.forEach(function(g){g.steps.forEach(function(st){
+      if(hidden[st.ns]&&!counted[st.ns]){counted[st.ns]=1;nHidden++;}});});
+    /* the visible groups drive BOTH the plot strip and the columns, so
+       they always line up even when a whole plot's trace is hidden */
+    var visGroups=vGroups.map(function(g){
+      return {g:g,vis:g.steps.filter(function(st){
+        return traceShowHidden||!hidden[st.ns];})};
+    }).filter(function(x){return x.vis.length;});
+    var multi=visGroups.length>1;
     var v=document.createElement('div');v.className='vtrace';
     var tl=document.createElement('div');tl.className='vo-title';
     var ts=document.createElement('span');
-    ts.textContent='code trace — click a step to expand it';
+    ts.textContent='code trace — click a step to expand, '
+      +'the eye to hide it while presenting';
     tl.appendChild(ts);
     var xa=document.createElement('button');xa.className='vo-xall';
     xa.textContent='Expand all';
@@ -4592,14 +4668,28 @@ _DECK_JS = r"""
     ca.title='Fold every step back down';
     ca.addEventListener('click',function(){setAllSteps(v,false);});
     tl.appendChild(xa);tl.appendChild(ca);
+    if(nHidden){
+      var sh=document.createElement('button');
+      sh.className='vo-xall'+(traceShowHidden?' on':'');
+      sh.textContent=traceShowHidden?'Hide hidden'
+        :('Show hidden ('+nHidden+')');
+      sh.title=traceShowHidden
+        ?'Hide the steps you marked hidden again'
+        :'Reveal the steps you hid — to view them or unhide them';
+      sh.addEventListener('click',function(){
+        traceShowHidden=!traceShowHidden;rebuildTrace();});
+      tl.appendChild(sh);
+    }
     v.appendChild(tl);
     if(multi){
       var strip=document.createElement('div');strip.className='vo-plots';
-      vGroups.forEach(function(g){strip.appendChild(plotThumb(g,true));});
+      visGroups.forEach(function(x){
+        strip.appendChild(plotThumb(x.g,true));});
       v.appendChild(strip);
     }
     var cols=document.createElement('div');cols.className='vo-groups';
-    vGroups.forEach(function(g){
+    visGroups.forEach(function(x){
+      var g=x.g,vis=x.vis;
       var col=document.createElement('div');col.className='vo-col';
       if(multi){
         col.style.borderColor=g.color;
@@ -4610,8 +4700,8 @@ _DECK_JS = r"""
       var hs=document.createElement('span');
       hs.textContent=g.it.title;h.appendChild(hs);
       col.appendChild(h);
-      g.steps.forEach(function(st,k){
-        col.appendChild(traceStep(st,k,g,multi));
+      vis.forEach(function(st,k){
+        col.appendChild(traceStep(st,k,g,multi,!!hidden[st.ns],s));
       });
       cols.appendChild(col);
     });
@@ -4642,7 +4732,7 @@ _DECK_JS = r"""
   function renderSlide(){
     var s=pres.slides[cur];
     stage.innerHTML='';
-    vGroups=[];
+    vGroups=[];traceShowHidden=false;
     closeVFull();
     if(!s){
       stage.innerHTML='<div class="slide slide-empty"><p>No slides yet.'
@@ -4678,7 +4768,7 @@ _DECK_JS = r"""
         page.className='vpage';
         while(stage.firstChild) page.appendChild(stage.firstChild);
         stage.appendChild(page);
-        stage.appendChild(buildTrace());
+        stage.appendChild(buildTrace(s));
         stage.classList.add('scrolly');
       }
     }
@@ -6148,6 +6238,14 @@ _DECK_JS = r"""
       return;
     }
     var ref=nsKey(shellEl.dataset.nb,card.dataset.anchor);
+    /* already on this slide? repeated clicks must NOT keep adding copies
+       — flash the frame it's in instead of cascading duplicates */
+    if(slideCells(s).some(function(c){return c.a.ref===ref;})){
+      toast('That card is already on this slide');
+      card.classList.add('target-flash');
+      setTimeout(function(){card.classList.remove('target-flash');},700);
+      return;
+    }
     var target=annotByIdx(s,activePane);
     if(!target||target.k!=='cell') activePane=firstEmpty(s);
     if(activePane<0){
@@ -6306,6 +6404,7 @@ _DECK_JS = r"""
         (s.annots||[]).forEach(function(a){
           if(a.k==='cell'&&a.ref) a.ref=strip(a.ref);
         });
+        if(Array.isArray(s.hidden)) s.hidden=s.hidden.map(strip);
         return s;});
       return c;});
   }
@@ -7327,6 +7426,19 @@ def _self_test() -> None:
     assert "mdClampScan" in out and "mdclamp" in out
     assert "vo-xall" in out and "fullscreenchange" in out
 
+    # id-less figure cells anchor by POSITION, and that anchor survives a
+    # content edit (the code-derived title changes, the anchor must not) —
+    # so a deck frame keeps resolving after the notebook is refreshed
+    a_before = parse_notebook({"cells": [{"cell_type": "code",
+        "source": "#| display: figure\nplot(a)", "outputs": [
+        {"output_type": "display_data", "data": {"image/png": "aGk="}}]}]})
+    a_after = parse_notebook({"cells": [{"cell_type": "code",
+        "source": "#| display: figure\nplot(a, b, c, lw=2)", "outputs": [
+        {"output_type": "display_data", "data": {"image/png": "aGk="}}]}]})
+    an_b = a_before.sections[0].items[0].anchor
+    an_a = a_after.sections[0].items[0].anchor
+    assert an_b == an_a == "cell:p0", (an_b, an_a)
+
     # untitled code cells: function names become titles; a bare code
     # line labels the nav but is not repeated as a card heading
     all_items = [it for s in doc.sections for it in s.items]
@@ -7397,6 +7509,14 @@ def _self_test() -> None:
                                  "slides": []}])
     assert pres_f[0]["folder"] == "paper 1"
     assert 'id="pr-newfold"' in out
+    # code-trace hidden-step list survives normalization (per slide)
+    pres_h = _as_presentations([{"name": "h", "slides": [
+        {"layout": "blank", "panes": [],
+         "annots": [{"k": "cell", "x": 5, "y": 5, "w": 40, "h": 40,
+                     "ref": "clim"}],
+         "hidden": ["nb::cell:c-prep", ""]}]}])
+    assert pres_h[0]["slides"][0]["hidden"] == ["nb::cell:c-prep"]
+    assert "vo-eye" in out and "traceShowHidden" in out
     pres3 = _as_presentations([{"name": "x", "slides": [
         {"layout": "title", "title": "T",
          "tprops": {"x": 30, "y": 20, "size": 5}},
