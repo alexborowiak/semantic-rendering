@@ -330,6 +330,7 @@ class Item:
 class Section:
     title: str
     section_id: str
+    level: int = 2                 # heading level: 1 (h1) or 2 (h2)
     items: list[Item] = field(default_factory=list)
 
 
@@ -758,8 +759,9 @@ def _build_chains(doc: Document) -> None:
 
 def parse_notebook(nb: dict, title: str | None = None) -> Document:
     used_slugs: set[str] = set()
-    title_locked = title is not None          # explicit --title wins over H1
     nb_title = title or nb.get("metadata", {}).get("title")
+    # an explicit --title OR a notebook metadata title wins over an H1
+    title_locked = nb_title is not None
 
     doc = Document(title=nb_title or "Untitled analysis")
     sem_meta = nb.get("metadata", {}).get("semantic", {})
@@ -790,12 +792,21 @@ def parse_notebook(nb: dict, title: str | None = None) -> Document:
             m = _HEADING_RE.match(stripped.splitlines()[0]) if stripped else None
             if m:
                 level, text = len(m.group(1)), m.group(2).strip()
-                if level == 1:
-                    if not title_locked:
-                        doc.title = text          # document title; no section
-                elif level == 2:
-                    cur_section = Section(text, _slug(text, used_slugs))
-                    doc.sections.append(cur_section)
+                if level <= 2:
+                    # h1 and h2 both become sections (h1 = top level). The
+                    # first h1 also names the document; later ones are
+                    # sections only, so no heading is silently dropped.
+                    if level == 1 and not title_locked:
+                        doc.title = text
+                        title_locked = True
+                    existing = next(
+                        (s for s in doc.sections if s.title == text), None)
+                    if existing is None:
+                        cur_section = Section(text, _slug(text, used_slugs))
+                        cur_section.level = level
+                        doc.sections.append(cur_section)
+                    else:
+                        cur_section = existing   # reuse; don't duplicate
                     cur_subsection = ""
                     handled_heading = True
                 else:  # level >= 3 -> subsection marker
@@ -1329,11 +1340,15 @@ def render_nav(doc: Document) -> str:
     for s in doc.sections:
         figs = sum(1 for it in s.items if it.kind in ("figure", "diagnostic"))
         parts.append(
+            f'<div class="navsec-row navsec-l{s.level}" '
+            f'data-sec="{s.section_id}">'
+            f'<button class="navsec-chev" aria-expanded="true" '
+            f'title="Collapse this section">▾</button>'
             f'<a class="navsec" href="#sec-{s.section_id}" '
             f'data-sec="{s.section_id}">'
             f'<span class="navsec-t">{html.escape(s.title)}</span>'
-            f'<span class="navsec-c">{figs or ""}</span></a>')
-        parts.append('<div class="navitems">')
+            f'<span class="navsec-c">{figs or ""}</span></a></div>')
+        parts.append(f'<div class="navitems" data-sec="{s.section_id}">')
         last_sub = None
         for it in s.items:
             if it.subsection and it.subsection != last_sub:
@@ -1384,7 +1399,8 @@ def render_sections(doc: Document) -> str:
         sections_html.append(
             f'<section class="section" id="sec-{s.section_id}" '
             f'data-sec="{s.section_id}">'
-            f'<div class="sectionhead"><span class="eyebrow">section</span>'
+            f'<div class="sectionhead sectionhead-l{s.level}">'
+            f'<span class="eyebrow">section</span>'
             f'<h2>{html.escape(s.title)}</h2></div>{cards}</section>')
     return "".join(sections_html)
 
@@ -1570,6 +1586,23 @@ body{margin:0;font-family:var(--sans);color:var(--ink);
   letter-spacing:-.005em;transition:background .15s,color .15s;}
 .navsec:hover{background:#ffffff0c;}
 .navsec.active{background:#39a9c014;color:#eef4f8;}
+/* a section row = a collapse chevron + the (clickable) section link */
+.navsec-row{display:flex;align-items:center;gap:1px;margin-top:6px;}
+.navsec-row .navsec{flex:1;margin-top:0;min-width:0;}
+.navsec-chev{background:none;border:none;color:var(--chrome-ink-2);
+  cursor:pointer;font-size:10px;line-height:1;padding:6px 3px;flex:none;
+  border-radius:4px;transition:transform .15s,color .15s;}
+.navsec-chev:hover{color:var(--chrome-ink);}
+.navsec-row.collapsed .navsec-chev{transform:rotate(-90deg);}
+.navitems.nav-collapsed{display:none;}
+/* h2 headings sit slightly nested under their h1 */
+.navsec-l1 .navsec{font-size:14px;}
+.navsec-l2{margin-left:12px;}
+.navsec-l2 .navsec{font-size:12.5px;font-weight:500;}
+/* fully hidden (filtered out) cards + their sidebar entries disappear */
+.card.is-hidden,.section.is-hidden{display:none;}
+.navitem.nav-hidden,.navsec-row.nav-hidden,.navitems.nav-hidden{
+  display:none;}
 .navsec-t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .navsec-c{font-family:var(--mono);font-size:10px;color:var(--cyan);
   background:#39a9c016;border-radius:20px;padding:1px 7px;min-width:18px;
@@ -1703,6 +1736,8 @@ body:not(.light) .docbar-p{color:#8ba0b2;}
 .section{margin-bottom:14px;scroll-margin-top:70px;}
 .sectionhead{padding:24px 0 6px;margin-bottom:8px;
   border-bottom:1px solid var(--line);}
+.sectionhead-l2 h2{font-size:21px;}
+.sectionhead-l2{padding-top:16px;}
 .eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.2em;
   text-transform:uppercase;color:var(--cyan-deep);display:block;
   margin-bottom:6px;}
@@ -1728,24 +1763,6 @@ body:not(.light) .docbar-p{color:#8ba0b2;}
 .card.k-note::before{background:var(--amber);}
 .card.k-code::before{background:var(--paper-3);}
 .card.target-flash{border-color:var(--cyan);box-shadow:0 0 0 3px #39a9c033;}
-
-/* filtered view: non-matching cards collapse to expandable stubs */
-.card.is-stub{padding:7px 14px;margin:7px 0;background:var(--paper);
-  border-style:dashed;}
-.card.is-stub .cardhead{margin-bottom:0;cursor:pointer;user-select:none;}
-.card.is-stub.stub-open{padding:18px 18px 16px;border-style:solid;}
-.card.is-stub.stub-open .cardhead{margin-bottom:12px;}
-.card.is-stub:not(.stub-open) .cardbody,
-.card.is-stub:not(.stub-open) .caption,
-.card.is-stub:not(.stub-open) .prov,
-.card.is-stub:not(.stub-open) .codewrap{display:none;}
-.card.is-stub:not(.stub-open) .cardtitle{font-size:13px;font-weight:500;
-  color:var(--ink-3);}
-.card.is-stub:not(.stub-open)::before{top:9px;bottom:9px;}
-.card.is-stub .cardhead::after{content:"\203A";margin-left:auto;flex:none;
-  color:var(--ink-3);font-size:15px;line-height:1;transition:transform .2s;}
-.card.is-stub.stub-open .cardhead::after{transform:rotate(90deg);}
-.card.is-stub .cardhead:hover .cardtitle{color:var(--ink);}
 
 .cardhead{display:flex;align-items:center;gap:10px;margin-bottom:12px;
   padding-left:6px;}
@@ -1778,7 +1795,7 @@ body:not(.light) .ckmain-print .badge{background:#cf9a4e2b;color:#dfb277;}
   flex:1;min-width:0;}
 /* titles that merely echo the first code line label the item in the
    nav, but are not repeated as a heading on the card */
-.card:not(.is-stub) .cardtitle.echo{display:none;}
+.cardtitle.echo{display:none;}
 .nodeid{font-family:var(--mono);font-size:10px;color:var(--ink-3);
   background:var(--paper-2);padding:2px 7px;border-radius:4px;flex:none;}
 
@@ -1980,9 +1997,9 @@ re-reads it after you re-run it in Jupyter, <b>&#10005;</b> closes.</li>
 <h3>Reading a notebook</h3>
 <ul>
 <li><b>Hide figures / markup / code</b> (top bar) filter every tab at
-once; <i>Show code</i> unfolds ALL code, including the code tucked
-under each figure. Hidden cards become slim stubs that expand when
-clicked.</li>
+once, removing those cards from the page and the sidebar; <i>Show
+code</i> unfolds ALL code, including the code tucked under each
+figure.</li>
 <li><b>Raw notebook</b> flips the current tab to the notebook exactly
 as authored &mdash; cells in order, directives visible &mdash; so you
 can always see where a title or caption came from.</li>
@@ -2561,12 +2578,6 @@ body:not(.light) .card{background:#101c28;border-color:#ffffff14;
   box-shadow:0 1px 2px #00000040;}
 body:not(.light) .card:hover{box-shadow:0 6px 22px #00000055;}
 body:not(.light) .card.k-code::before{background:#2c3c4c;}
-body:not(.light) .card.is-stub{background:#0e1824;
-  border-color:#ffffff1f;}
-body:not(.light) .card.is-stub:not(.stub-open) .cardtitle{
-  color:#8ba0b2;}
-body:not(.light) .card.is-stub .cardhead:hover .cardtitle{
-  color:#e6edf3;}
 body:not(.light) .cardtitle{color:#e6edf3;}
 body:not(.light) .badge{background:#ffffff0d;color:#8ba0b2;}
 body:not(.light) .k-figure .badge{background:#39a9c022;color:#5fc3d8;}
@@ -2781,16 +2792,33 @@ _JS = r"""
     });
   }
   function applyFilters(){
-    $$('.nbshell .card').forEach(function(c){
-      var kind=c.dataset.kind,note=c.dataset.note==='1';
-      var show=note?vis.markup
-        :(kind==='figure'||kind==='diagnostic')?vis.figs:vis.code;
-      /* advanced: hide a code cell whose primary type is filtered out */
-      if(show&&!note&&kind!=='figure'&&kind!=='diagnostic'&&c.dataset.ck){
-        if(ckHidden[c.dataset.ck.split(' ')[0]]) show=false;
-      }
-      c.classList.toggle('is-stub',!show);
-      if(show) c.classList.remove('stub-open');
+    $$('.nbshell').forEach(function(sh){
+      $$('.card',sh).forEach(function(c){
+        var kind=c.dataset.kind,note=c.dataset.note==='1';
+        var show=note?vis.markup
+          :(kind==='figure'||kind==='diagnostic')?vis.figs:vis.code;
+        /* advanced: hide a code cell whose primary type is filtered out */
+        if(show&&!note&&kind!=='figure'&&kind!=='diagnostic'&&c.dataset.ck){
+          if(ckHidden[c.dataset.ck.split(' ')[0]]) show=false;
+        }
+        /* a hidden card is fully removed from the doc + the sidebar */
+        c.classList.toggle('is-hidden',!show);
+        var id=c.id.replace(/^card-/,'');
+        var nav=sh.querySelector('.navitem[data-item="'+id+'"]');
+        if(nav) nav.classList.toggle('nav-hidden',!show);
+      });
+      /* a section whose cards are ALL hidden folds away too (doc + nav) */
+      $$('.section',sh).forEach(function(sec){
+        var cards=$$('.card',sec);
+        var gone=cards.length>0&&cards.every(function(c){
+          return c.classList.contains('is-hidden');});
+        sec.classList.toggle('is-hidden',gone);
+        var sid=sec.dataset.sec;
+        var row=sh.querySelector('.navsec-row[data-sec="'+sid+'"]');
+        var items=sh.querySelector('.navitems[data-sec="'+sid+'"]');
+        if(row) row.classList.toggle('nav-hidden',gone);
+        if(items) items.classList.toggle('nav-hidden',gone);
+      });
     });
     renderTypeButtons();
     var fb=$('#ck-filter-btn');
@@ -3207,14 +3235,6 @@ _JS = r"""
       });
     });
 
-    /* ---- filtered-out cards expand in place when clicked ---- */
-    cards.forEach(function(c){
-      var head=$('.cardhead',c);
-      if(head) head.addEventListener('click',function(){
-        if(c.classList.contains('is-stub')) c.classList.toggle('stub-open');
-      });
-    });
-
     /* ---- graph node / dep chip -> scroll to card ---- */
     function gotoItem(itemId){
       var card=$('.card[id="card-'+itemId+'"]',shell);
@@ -3244,6 +3264,18 @@ _JS = r"""
       var c=rg.classList.toggle('collapsed');
       rgBtn.setAttribute('aria-expanded',(!c).toString());
       rgBtn.textContent=c?'+':'\u2013';
+    });
+    /* ---- collapse a nav section (its items fold away) ---- */
+    $$('.navsec-chev',shell).forEach(function(chev){
+      chev.addEventListener('click',function(e){
+        e.preventDefault();e.stopPropagation();
+        var row=chev.closest('.navsec-row');
+        var items=row&&row.nextElementSibling;
+        var col=row.classList.toggle('collapsed');
+        if(items&&items.classList.contains('navitems'))
+          items.classList.toggle('nav-collapsed',col);
+        chev.setAttribute('aria-expanded',(!col).toString());
+      });
     });
 
     /* ---- register ---- */
@@ -7143,7 +7175,6 @@ _DECK_JS = r"""
 _SHELL_TEMPLATE = """<div class="shell nbshell" data-nb="{stem}"{path_attr}>
   <aside class="rail">
     <div class="railhead">
-      <p class="brand">PlotLine</p>
       <h1 class="railtitle">{title}</h1>
       <div class="railmeta">{meta}</div>
     </div>
@@ -7929,6 +7960,15 @@ def _self_test() -> None:
     assert 'id="ck-filter-btn"' in out and 'id="ck-filter-menu"' in out
     # huge printed output is capped + scrollable in the document view
     assert "max-height:min(440px,62vh)" in out
+    # h1 (# ) headings become sections too, not just the document title
+    hdoc = parse_notebook({"cells": [
+        {"cell_type": "markdown", "source": "# PR"},
+        {"cell_type": "code", "source": "x = 1", "outputs": []},
+        {"cell_type": "markdown", "source": "## Details"},
+        {"cell_type": "code", "source": "y = 2", "outputs": []}]})
+    assert any(s.title == "PR" and s.level == 1 for s in hdoc.sections)
+    assert any(s.title == "Details" and s.level == 2 for s in hdoc.sections)
+    assert hdoc.title == "PR"          # first h1 also names the document
     assert 'data-anchor="clim"' in out and 'data-anchor="cell:md1"' in out
     assert '"stem": "demo"' in out or '"stem":"demo"' in out
     # markdown notes: bullets + bold survive, math left for MathJax
