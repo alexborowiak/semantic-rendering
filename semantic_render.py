@@ -310,6 +310,7 @@ class Item:
     depends: list[str] = field(default_factory=list)
     subsection: str = ""
     is_note: bool = False          # pure-markdown interpretation card
+    title_echo: bool = False       # title merely repeats a code line
     steps: list[CodeStep] = field(default_factory=list)  # folded code chunks
     members: list = field(default_factory=list)          # transient, build-only
 
@@ -360,15 +361,41 @@ def _infer_kind(item_outputs: list[RenderedOutput]) -> str:
     return "code"
 
 
-def _title_from_code(code: str) -> str:
-    """Best-effort title: first comment line, else first call/assignment."""
-    for line in code.splitlines():
-        s = line.strip()
-        if s.startswith("#"):
-            return s.lstrip("#").strip() or "Code"
-        if s:
-            return (s[:60] + "...") if len(s) > 60 else s
-    return "Code"
+def _title_from_code(code: str) -> tuple[str, bool]:
+    """Best-effort title. Returns (title, echo): echo=True when the title
+    merely repeats a line of the cell's code — such titles still label the
+    item in the nav but are not repeated as a heading on the card."""
+    lines = [ln.strip() for ln in code.splitlines() if ln.strip()]
+    lines = [ln for ln in lines if not ln.startswith("#|")]
+    if lines and lines[0].startswith("#"):
+        return (lines[0].lstrip("#").strip() or "Code"), False
+    funcs: list[tuple[str, bool]] = []      # (name, is_function)
+    other = False
+    try:
+        for node in ast.parse(code).body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                funcs.append((node.name, True))
+            elif isinstance(node, ast.ClassDef):
+                funcs.append((node.name, False))
+            else:
+                other = True
+    except SyntaxError:
+        pass
+    if funcs:
+        if len(funcs) == 1:
+            name, is_fn = funcs[0]
+            base = name + ("()" if is_fn else "")
+            return (base + (" + code" if other else "")), False
+        if other:
+            return f"{len(funcs)} functions + code", False
+        names = ", ".join(n for n, _ in funcs[:3])
+        if len(funcs) > 3:
+            names += ", …"
+        return f"{len(funcs)} functions ({names})", False
+    for s in lines:
+        if not s.startswith("#"):
+            return ((s[:60] + "...") if len(s) > 60 else s), True
+    return "Code", False
 
 
 def _csv(value: str) -> list[str]:
@@ -444,8 +471,12 @@ def _finalize_item(item: Item, used_slugs: set[str],
                            "transform": "transform",
                            "metric": "compute"}.get(item.kind, "")
 
-    item.title = (next((m["d"]["title"] for m in members if m["d"].get("title")), "")
-                  or _title_from_code(primary["code"]))
+    explicit = next(
+        (m["d"]["title"] for m in members if m["d"].get("title")), "")
+    if explicit:
+        item.title = explicit
+    else:
+        item.title, item.title_echo = _title_from_code(primary["code"])
     item.caption = (primary["d"].get("caption")
                     or next((m["d"]["caption"] for m in members
                              if m["d"].get("caption")), ""))
@@ -951,6 +982,21 @@ def _kind_class(kind: str) -> str:
     }.get(kind, "k-code")
 
 
+def _fig_pager(imgs) -> str:
+    """Several figures from one cell: a pager, one figure at a time."""
+    pages = "".join(
+        f'<div class="figpage{" current" if i == 0 else ""}">{o.payload}'
+        f'</div>' for i, o in enumerate(imgs))
+    return (
+        f'<div class="figpager" data-n="{len(imgs)}">{pages}'
+        f'<div class="figpager-nav">'
+        f'<button class="fp-btn fp-prev" title="Previous figure">'
+        f'&#8249;</button>'
+        f'<span class="fp-count">1 / {len(imgs)}</span>'
+        f'<button class="fp-btn fp-next" title="Next figure">'
+        f'&#8250;</button></div></div>')
+
+
 def render_item(item: Item) -> str:
     badge = _BADGE.get(item.kind, item.kind)
     kclass = _kind_class(item.kind)
@@ -958,12 +1004,16 @@ def render_item(item: Item) -> str:
     # the face; everything else folds into an "also printed" disclosure
     imgs = [o for o in item.outputs if o.has_image]
     others = [o for o in item.outputs if not o.has_image]
+    fig_html = (_fig_pager(imgs) if len(imgs) > 1
+                else "".join(o.payload for o in imgs))
     if imgs and others:
-        out_html = "".join(o.payload for o in imgs) + (
+        out_html = fig_html + (
             '<details class="alsoprinted"><summary>also printed by '
             'this cell</summary><div class="alsoinner">'
             + "".join(o.payload for o in others)
             + "</div></details>")
+    elif len(imgs) > 1:
+        out_html = fig_html
     else:
         out_html = "".join(o.payload for o in item.outputs)
 
@@ -1032,7 +1082,8 @@ def render_item(item: Item) -> str:
         f'data-anchor="{html.escape(item.anchor or item.item_id)}" tabindex="-1">'
         f'<header class="cardhead">'
         f'<span class="badge">{badge}</span>'
-        f'<h3 class="cardtitle">{html.escape(item.title)}</h3>'
+        f'<h3 class="cardtitle{" echo" if item.title_echo else ""}">'
+        f'{html.escape(item.title)}</h3>'
         f'{id_tag}</header>'
         f'<div class="cardbody">{body}</div>'
         f'{caption}{prov}{code_block}</article>')
@@ -1060,6 +1111,22 @@ def render_nav(doc: Document) -> str:
                 f'data-item="{it.item_id}">'
                 f'<span class="dot"></span>'
                 f'<span class="navitem-t">{html.escape(it.title)}</span></a>')
+        parts.append('</div>')
+    # key: one entry per item kind that actually occurs in this notebook
+    labels = {"k-figure": "figure", "k-dataset": "dataset",
+              "k-transform": "transform", "k-metric": "metric",
+              "k-note": "note", "k-code": "code"}
+    seen: list[str] = []
+    for s in doc.sections:
+        for it in s.items:
+            kc = _kind_class(it.kind)
+            if kc not in seen:
+                seen.append(kc)
+    if seen:
+        parts.append('<div class="navkey"><span class="navkey-h">key</span>')
+        for kc in seen:
+            parts.append(f'<span class="nk {kc}"><span class="dot"></span>'
+                         f'{labels.get(kc, kc)}</span>')
         parts.append('</div>')
     parts.append('</nav>')
     return "".join(parts)
@@ -1273,12 +1340,25 @@ body{margin:0;font-family:var(--sans);color:var(--ink);
 .navitem-t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .navitem .dot{width:6px;height:6px;border-radius:2px;flex:none;
   background:var(--chrome-ink-2);}
-.navitem.k-figure .dot{background:var(--cyan);}
-.navitem.k-dataset .dot{background:#4d90c0;}
-.navitem.k-transform .dot{background:#5b7589;}
-.navitem.k-metric .dot{background:#46a892;}
-.navitem.k-note .dot{background:var(--amber);border-radius:50%;}
-.navitem.k-code .dot{background:#56627033;border:1px solid #ffffff22;}
+.navitem.k-figure .dot,.nk.k-figure .dot{background:var(--cyan);}
+.navitem.k-dataset .dot,.nk.k-dataset .dot{background:#4d90c0;}
+.navitem.k-transform .dot,.nk.k-transform .dot{background:#5b7589;}
+.navitem.k-metric .dot,.nk.k-metric .dot{background:#46a892;}
+.navitem.k-note .dot,.nk.k-note .dot{background:var(--amber);
+  border-radius:50%;}
+.navitem.k-code .dot,.nk.k-code .dot{background:#56627033;
+  border:1px solid #ffffff22;}
+
+/* ---------- nav key (what the dot colours mean) ---------- */
+.navkey{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center;
+  padding:10px 12px 12px;margin:8px 10px 0;
+  border-top:1px solid var(--chrome-line);}
+.navkey-h{font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--chrome-ink-2);flex:0 0 100%;}
+.nk{display:inline-flex;align-items:center;gap:6px;font-size:11px;
+  font-family:var(--mono);color:var(--chrome-ink-2);}
+.nk .dot{width:6px;height:6px;border-radius:2px;flex:none;
+  background:var(--chrome-ink-2);}
 
 /* ---------- rail graph (signature) ---------- */
 .railgraph{border-top:1px solid var(--chrome-line);padding:14px 14px 20px;
@@ -1394,6 +1474,9 @@ body{margin:0;font-family:var(--sans);color:var(--ink);
 .k-note .badge{background:#cf9a4e1f;color:#8a6326;}
 .cardtitle{font-size:16px;font-weight:600;margin:0;letter-spacing:-.01em;
   flex:1;min-width:0;}
+/* titles that merely echo the first code line label the item in the
+   nav, but are not repeated as a heading on the card */
+.card:not(.is-stub) .cardtitle.echo{display:none;}
 .nodeid{font-family:var(--mono);font-size:10px;color:var(--ink-3);
   background:var(--paper-2);padding:2px 7px;border-radius:4px;flex:none;}
 
@@ -1403,12 +1486,37 @@ body{margin:0;font-family:var(--sans);color:var(--ink);
 .figframe img{max-width:100%;height:auto;display:block;margin:0 auto;}
 .figframe svg{max-width:100%;height:auto;}
 
+/* several figures from one cell: pager with prev/next arrows */
+.figpager .figpage{display:none;}
+.figpager .figpage.current{display:block;}
+.figpager-nav{display:flex;align-items:center;justify-content:center;
+  gap:10px;margin-top:6px;}
+.fp-btn{font-family:var(--mono);font-size:15px;line-height:1;
+  border:1px solid var(--paper-3);background:#fff;color:var(--ink-2);
+  border-radius:6px;width:28px;height:22px;cursor:pointer;padding:0;}
+.fp-btn:hover{border-color:var(--cyan);color:var(--ink);}
+.fp-count{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);}
+
+/* huge markdown notes: clamped with a Show more toggle */
+.cardbody.mdclamp{max-height:440px;overflow:hidden;position:relative;}
+.cardbody.mdclamp::after{content:"";position:absolute;left:0;right:0;
+  bottom:0;height:64px;pointer-events:none;
+  background:linear-gradient(#fbfcfd00,var(--paper));}
+.cardbody.mdclamp.mdopen{max-height:none;}
+.cardbody.mdclamp.mdopen::after{display:none;}
+.mdmore{display:block;margin:8px 0 0 6px;font-family:var(--mono);
+  font-size:10.5px;border:1px solid var(--line);background:#fff;
+  color:var(--cyan-deep);border-radius:6px;padding:4px 12px;
+  cursor:pointer;}
+.mdmore:hover{border-color:var(--cyan);color:var(--ink);}
+
 pre.result,pre.stream,pre.error{font-family:var(--mono);font-size:12px;
   background:var(--paper-2);border:1px solid var(--paper-3);
   border-radius:7px;padding:11px 13px;overflow:auto;margin:0;line-height:1.45;}
 pre.error{background:#fbf0ee;border-color:#f0d2cc;color:#8a3221;}
-.metric .cardbody pre.result{font-size:14px;background:#46a8920d;
-  border-color:#46a89233;color:#1f5f54;font-weight:500;}
+.card.k-metric .cardbody pre.result{font-size:14px;
+  background:#46a8920d;border-color:#46a89233;color:#1f5f54;
+  font-weight:500;}
 
 .note{font-family:var(--serif);font-size:15px;line-height:1.65;
   color:var(--ink-2);}
@@ -1627,7 +1735,7 @@ or just download <code>semantic_render.py</code> and run
 # App chrome (controls bar + tab rows), welcome screen, open dialog,
 # drag-drop hint
 _APP_CSS = r"""
-:root{--appbar-h:44px;--tabsrow-h:34px;--chrome-h:78px;
+:root{--appbar-h:44px;--tabsrow-h:44px;--chrome-h:88px;--dc-w:430px;
   --presrail-w:176px;}
 body.presrail-min{--presrail-w:46px;}
 
@@ -1648,9 +1756,17 @@ body.presrail-min{--presrail-w:46px;}
   align-items:center;}
 .appbar .toggle:hover{border-color:var(--cyan);color:#fff;}
 .appbar .toggle.tv.off{color:#69788a;}
-.appbar .menubtn{border-color:#ffffff22;background:none;}
+.appbar .menubtn{display:inline-flex;align-items:center;
+  justify-content:center;width:34px;height:34px;
+  border:1px solid #ffffff22;background:none;
+  border-radius:var(--rad);cursor:pointer;flex:none;}
 .appbar .menubtn span,.appbar .menubtn span::before,
-.appbar .menubtn span::after{background:#cdd9e3;}
+.appbar .menubtn span::after{content:"";display:block;width:15px;
+  height:2px;background:#cdd9e3;position:relative;}
+.appbar .menubtn span::before{position:absolute;top:-5px;}
+.appbar .menubtn span::after{position:absolute;top:5px;}
+.appbar .menubtn[aria-pressed="true"]{background:#39a9c022;
+  border-color:#39a9c088;}
 .tab-openbtn{font-family:var(--mono);font-size:11px;background:none;
   border:1px solid #ffffff22;border-radius:var(--rad);color:var(--cyan);
   padding:7px 14px;cursor:pointer;white-space:nowrap;flex:none;}
@@ -1660,17 +1776,22 @@ body.presrail-min{--presrail-w:46px;}
 .tabsrow{display:flex;align-items:stretch;height:var(--tabsrow-h);
   background:#0d1a26;}
 .tabstrip{display:flex;align-items:stretch;overflow-x:auto;
-  min-width:0;scrollbar-width:thin;flex:0 1 auto;}
-.tab{display:flex;align-items:center;gap:6px;padding:0 9px 0 14px;
-  max-width:230px;min-width:0;cursor:pointer;user-select:none;
-  font-size:12px;border-right:1px solid #ffffff10;color:#8ba0b2;
+  min-width:0;scrollbar-width:thin;flex:0 1 auto;
+  gap:5px;padding:6px 8px 0;}
+.tab{display:flex;align-items:center;gap:8px;padding:0 10px 0 15px;
+  max-width:260px;min-width:0;cursor:pointer;user-select:none;
+  font-size:13px;color:#96a9ba;background:#ffffff08;
+  border:1px solid #ffffff14;border-bottom:none;
+  border-radius:9px 9px 0 0;
   white-space:nowrap;transition:background .12s,color .12s;}
-.tab:hover{background:#ffffff0a;color:#cdd9e3;}
-.tab.current{background:var(--paper-2);color:var(--ink);font-weight:600;}
-.tab-t{overflow:hidden;text-overflow:ellipsis;max-width:160px;}
-.tab-b{background:none;border:none;color:inherit;opacity:.5;cursor:pointer;
-  font-size:11px;padding:2px 3px;border-radius:4px;line-height:1;flex:none;}
-.tab-b:hover{opacity:1;background:#00000022;}
+.tab:hover{background:#ffffff12;color:#cdd9e3;}
+.tab.current{background:#0b141d;color:#e6edf3;font-weight:600;
+  border-color:#ffffff1f;}
+.tab-t{overflow:hidden;text-overflow:ellipsis;max-width:200px;}
+.tab-b{background:none;border:none;color:inherit;opacity:.55;
+  cursor:pointer;font-size:13px;padding:4px 6px;border-radius:5px;
+  line-height:1;flex:none;}
+.tab-b:hover{opacity:1;background:#00000033;}
 .tabs-label{font-family:var(--mono);font-size:8.5px;letter-spacing:.18em;
   text-transform:uppercase;color:#54677a;display:flex;align-items:center;
   padding:0 10px 0 14px;flex:none;user-select:none;}
@@ -1778,7 +1899,7 @@ body{padding-top:var(--chrome-h);padding-left:var(--presrail-w);}
    chrome shifts right so it sits above the DOCUMENT (IDE-style) */
 .deck.creating{left:var(--presrail-w);}
 body.creating-docs .apptop{
-  left:calc(var(--presrail-w) + min(352px,94vw));}
+  left:calc(var(--presrail-w) + min(var(--dc-w),94vw));}
 @media (max-width:860px){
   .deck.creating{top:var(--chrome-h);}
   body.creating-docs .apptop{left:var(--presrail-w);}
@@ -1886,11 +2007,25 @@ body.creating-docs .apptop{
   font-size:11.5px;border:1px solid var(--line);border-radius:6px;
   padding:8px 10px;background:#fff;color:var(--ink);}
 #odlg-input:focus{outline:none;border-color:var(--cyan);}
+.odlg-inrow{display:flex;gap:8px;align-items:stretch;}
+.odlg-inrow #odlg-input{flex:1;min-width:0;}
+#odlg-go{flex:none;font-weight:600;padding:8px 16px;
+  border-color:var(--cyan);color:var(--cyan-deep);background:#fff;}
+#odlg-go:hover:not(:disabled){background:var(--cyan);color:#fff;}
+#odlg-go:disabled,#odlg-input:disabled{opacity:.55;cursor:default;}
+.odlg-load{height:3px;margin-top:8px;border-radius:2px;overflow:hidden;
+  background:#39a9c022;position:relative;}
+.odlg-load[hidden]{display:none;}
+.odlg-load span{position:absolute;left:-40%;top:0;width:40%;height:100%;
+  background:var(--cyan);border-radius:2px;
+  animation:odlg-slide 1.1s ease-in-out infinite;}
+@keyframes odlg-slide{to{left:100%;}}
 
-/* ---------- prominent refresh ---------- */
-.toggle.refresh{color:#5fc3d8;border-color:#39a9c055;}
-.toggle.refresh:disabled{opacity:.45;cursor:default;}
-.toggle.refresh[hidden]{display:none;}
+/* ---------- section sidebar (TOC): hidden until ☰ toggles it ------- */
+@media(min-width:861px){
+  body:not(.tocshow) .shell{grid-template-columns:1fr;}
+  body:not(.tocshow) .nbshell .rail{display:none;}
+}
 
 /* ---------- instant tooltips (replaces slow native titles) -------- */
 .apptip{position:fixed;z-index:300;background:#0e1926;color:#dce6ee;
@@ -1910,8 +2045,6 @@ body.light .appbar .toggle{border-color:var(--line);background:#fff;
 body.light .appbar .toggle:hover{border-color:var(--cyan);
   color:var(--ink);}
 body.light .appbar .toggle.tv.off{color:var(--ink-3);}
-body.light .appbar .toggle.refresh{color:var(--cyan-deep);
-  border-color:#39a9c066;}
 body.light .appbar .menubtn{border-color:var(--line);}
 body.light .appbar .menubtn span,
 body.light .appbar .menubtn span::before,
@@ -1919,8 +2052,9 @@ body.light .appbar .menubtn span::after{background:var(--ink-2);}
 body.light .tab-openbtn{border-color:var(--line);
   color:var(--cyan-deep);}
 body.light .tabsrow{background:#e9eef3;}
-body.light .tab{border-right-color:var(--line);color:var(--ink-3);}
-body.light .tab:hover{background:#00000008;color:var(--ink);}
+body.light .tab{border-color:var(--line);background:#00000006;
+  color:var(--ink-3);}
+body.light .tab:hover{background:#00000010;color:var(--ink);}
 body.light .tab.current{background:var(--paper);color:var(--ink);}
 body.light .tabs-label{color:var(--ink-3);}
 body.light .presrail{background:#f4f7fa;
@@ -1982,6 +2116,115 @@ body.light .film-row.current{background:#39a9c022;
 body.light .film-mini{color:var(--ink-3);}
 body.light .film-mini:hover{background:#00000012;color:var(--ink);}
 body.light .film-label .film-n{color:var(--ink-3);}
+/* document rail (section nav aka Overview + analysis graph) */
+body.light .rail{background:#f2f5f8;color:var(--ink-2);
+  border-right-color:var(--line);}
+body.light .railhead{border-bottom-color:var(--line);}
+body.light .railtitle{color:var(--ink);}
+body.light .railmeta{color:var(--ink-3);}
+body.light .brand{color:var(--cyan-deep);}
+body.light .navsec{color:var(--ink-2);}
+body.light .navsec:hover{background:#00000008;}
+body.light .navsec.active{background:#39a9c01c;color:var(--ink);}
+body.light .navitems{border-left-color:var(--line);}
+body.light .navsub{color:var(--ink-3);}
+body.light .navitem{color:var(--ink-3);}
+body.light .navitem:hover{color:var(--ink);background:#00000006;}
+body.light .navitem.active{color:var(--ink);}
+body.light .navitem.k-code .dot,body.light .nk.k-code .dot{
+  background:#56627022;border-color:#00000026;}
+body.light .navkey{border-top-color:var(--line);}
+body.light .navkey-h,body.light .nk{color:var(--ink-3);}
+body.light .nk .dot{background:var(--ink-3);}
+body.light .navitem .dot{background:var(--ink-3);}
+body.light .navitem.k-figure .dot,body.light .nk.k-figure .dot{
+  background:var(--cyan);}
+body.light .navitem.k-dataset .dot,body.light .nk.k-dataset .dot{
+  background:#4d90c0;}
+body.light .navitem.k-transform .dot,body.light .nk.k-transform .dot{
+  background:#5b7589;}
+body.light .navitem.k-metric .dot,body.light .nk.k-metric .dot{
+  background:#46a892;}
+body.light .navitem.k-note .dot,body.light .nk.k-note .dot{
+  background:var(--amber);}
+body.light .railgraph{background:#e9eef3;border-top-color:var(--line);}
+body.light .rg-collapse{border-color:var(--line);color:var(--ink-3);}
+body.light .rg-collapse:hover{color:var(--ink);
+  border-color:#00000033;}
+
+/* ---------- dark document (default theme; body.light keeps paper) --- */
+body:not(.light){background:#0b141d;}
+body:not(.light) .stage{background:#0b141d;}
+body:not(.light) .sectionhead{border-bottom-color:#ffffff14;}
+body:not(.light) .sectionhead h2{color:#e6edf3;}
+body:not(.light) .card{background:#101c28;border-color:#ffffff14;
+  box-shadow:0 1px 2px #00000040;}
+body:not(.light) .card:hover{box-shadow:0 6px 22px #00000055;}
+body:not(.light) .card.k-code::before{background:#2c3c4c;}
+body:not(.light) .card.is-stub{background:#0e1824;
+  border-color:#ffffff1f;}
+body:not(.light) .card.is-stub:not(.stub-open) .cardtitle{
+  color:#8ba0b2;}
+body:not(.light) .card.is-stub .cardhead:hover .cardtitle{
+  color:#e6edf3;}
+body:not(.light) .cardtitle{color:#e6edf3;}
+body:not(.light) .badge{background:#ffffff0d;color:#8ba0b2;}
+body:not(.light) .k-figure .badge{background:#39a9c022;color:#5fc3d8;}
+body:not(.light) .k-dataset .badge{background:#4d90c022;color:#7fb3d8;}
+body:not(.light) .k-transform .badge{background:#5b758922;
+  color:#93a7b8;}
+body:not(.light) .k-metric .badge{background:#46a89222;color:#6fcab4;}
+body:not(.light) .k-note .badge{background:#cf9a4e26;color:#dfb277;}
+body:not(.light) .nodeid{background:#ffffff0f;color:#8ba0b2;}
+body:not(.light) .note{color:#c3cfda;}
+body:not(.light) .note .caption{color:#c3cfda;}
+body:not(.light) .caption{color:#9fb0bf;}
+body:not(.light) pre.result,body:not(.light) pre.stream{
+  background:#0d1926;border-color:#ffffff14;color:#c9d6e2;}
+body:not(.light) pre.error{background:#38180f;border-color:#6b352a;
+  color:#f2b3a6;}
+body:not(.light) .card.k-metric .cardbody pre.result{
+  background:#46a89216;border-color:#46a89240;color:#7fd0bd;}
+body:not(.light) .figframe{border-color:#ffffff1f;}
+body:not(.light) .xr-wrap,body:not(.light) .rich{background:#fbfcfd;
+  border:1px solid #ffffff1f;border-radius:8px;padding:8px;
+  color:var(--ink);}
+body:not(.light) .codewrap{border-top-color:#ffffff14;}
+body:not(.light) .codetoggle{color:#8ba0b2;}
+body:not(.light) .codetoggle:hover{color:#5fc3d8;}
+body:not(.light) .steplabel,body:not(.light) .ct-steps{color:#8ba0b2;}
+body:not(.light) details.alsoprinted{border-color:#ffffff1f;}
+body:not(.light) details.alsoprinted>summary{color:#8ba0b2;}
+body:not(.light) details.alsoprinted[open]>summary{
+  border-bottom-color:#ffffff1f;}
+body:not(.light) .depchip{color:#dfc49a;}
+body:not(.light) .depchip:hover{color:#fff;}
+body:not(.light) .mdmore{background:#101c28;border-color:#ffffff22;
+  color:#5fc3d8;}
+body:not(.light) .mdmore:hover{border-color:var(--cyan);color:#fff;}
+body:not(.light) .cardbody.mdclamp::after{
+  background:linear-gradient(#101c2800,#101c28);}
+body:not(.light) .fp-btn{background:#101c28;border-color:#ffffff22;
+  color:#c9d6e2;}
+body:not(.light) .fp-btn:hover{border-color:var(--cyan);color:#fff;}
+body:not(.light) .fp-count{color:#8ba0b2;}
+body:not(.light) .rawcell{background:#101c28;border-color:#ffffff14;}
+body:not(.light) .rawmd{color:#c3cfda;}
+body:not(.light) .rawmd h1,body:not(.light) .rawmd h2,
+body:not(.light) .rawmd h3,body:not(.light) .rawmd h4,
+body:not(.light) .rawmd h5,body:not(.light) .rawmd h6{color:#e6edf3;}
+body:not(.light) .welcome{background:#0b141d;}
+body:not(.light) .welcome-box h1{color:#e6edf3;}
+body:not(.light) .recent-i{background:#101c28;
+  border-color:#ffffff22;color:#5fc3d8;}
+body:not(.light) .welcome-btns .dbtn{background:#101c28;
+  border-color:#ffffff22;color:#c9d6e2;}
+body:not(.light) .welcome-btns .dbtn:hover{border-color:var(--cyan);
+  color:#fff;}
+body:not(.light) .welcome-btns .dbtn.primary{
+  background:var(--cyan-deep);border-color:var(--cyan-deep);
+  color:#fff;}
+body:not(.light) .welcome-links a{color:#5fc3d8;}
 
 /* ---------- drag-drop hint ---------- */
 .drophint{position:fixed;inset:10px;z-index:140;border:2px dashed var(--cyan);
@@ -2109,7 +2352,6 @@ _JS = r"""
     APP.order.forEach(function(s){APP.shells[s].el.hidden=(s!==stem);});
     renderTabs();
     renderRawBtn();
-    renderRefreshBtn();
     document.dispatchEvent(new CustomEvent('sem:activate',
       {detail:{stem:stem}}));
   }
@@ -2191,7 +2433,7 @@ _JS = r"""
   function applyTheme(light){
     document.body.classList.toggle('light',light);
     if(themeBtn){
-      themeBtn.innerHTML=light?'&#9789;':'&#9788;';
+      themeBtn.innerHTML=light?'&#9789; Dark':'&#9788; Light';
       themeBtn.setAttribute('data-tip',light
         ?'Switch to the dark theme':'Switch to the light theme');
       themeBtn.removeAttribute('title');
@@ -2206,33 +2448,31 @@ _JS = r"""
     applyTheme(!document.body.classList.contains('light'));
   });
 
-  /* ---- prominent refresh: reload the active tab from its source --- */
-  var refreshBtn=$('#refresh-btn');
-  function renderRefreshBtn(){
-    if(!refreshBtn) return;
-    var canOpen=APP.mode==='app'||APP.mode==='web';
-    var sh=APP.active&&APP.shells[APP.active];
-    refreshBtn.hidden=!canOpen||!sh;
-    if(refreshBtn.hidden) return;
-    if(sh.path){
-      refreshBtn.disabled=false;
-      refreshBtn.setAttribute('data-tip',
-        /^https?:/i.test(sh.path)
-          ?('Reload "'+APP.active+'" from its URL — fetches the '
-            +'latest pushed version')
-          :('Reload "'+APP.active+'" from disk — picks up your '
-            +'latest run'));
-    } else {
-      refreshBtn.disabled=true;
-      refreshBtn.setAttribute('data-tip','This notebook was opened '
-        +'from a dropped file, so there is no source to reload — '
-        +'drop the file again to update it');
+  /* ---- builder panel width: draggable right edge, persisted ------- */
+  var dcR=$('#dc-resize');
+  var dcwPref=null;
+  try{dcwPref=parseInt(localStorage.getItem('plotline-dcw'),10);}
+  catch(e){}
+  if(dcwPref&&dcwPref>=300&&dcwPref<=760)
+    document.documentElement.style.setProperty('--dc-w',dcwPref+'px');
+  if(dcR) dcR.addEventListener('mousedown',function(e){
+    e.preventDefault();
+    dcR.classList.add('on');
+    var host=$('#deck-create');
+    var left=host?host.getBoundingClientRect().left:0;
+    var w=0;
+    function mv(ev){
+      w=Math.max(300,Math.min(760,ev.clientX-left));
+      document.documentElement.style.setProperty('--dc-w',w+'px');
     }
-    refreshBtn.removeAttribute('title');
-  }
-  if(refreshBtn) refreshBtn.addEventListener('click',function(){
-    var sh=APP.active&&APP.shells[APP.active];
-    if(sh&&sh.path) openPath(sh.path);
+    function up(){
+      dcR.classList.remove('on');
+      document.removeEventListener('mousemove',mv);
+      document.removeEventListener('mouseup',up);
+      if(w) try{localStorage.setItem('plotline-dcw',w);}catch(e){}
+    }
+    document.addEventListener('mousemove',mv);
+    document.addEventListener('mouseup',up);
   });
 
   /* ---- instant tooltips: every [title] becomes a styled tip ------- */
@@ -2276,6 +2516,26 @@ _JS = r"""
   });
   document.addEventListener('mousedown',hideTip,true);
   document.addEventListener('scroll',hideTip,true);
+
+  /* ---- figure pager: ‹ › flips between figures of one cell -------- */
+  /* delegated so it works in cloned slide frames too */
+  document.addEventListener('click',function(e){
+    var b=e.target.closest&&e.target.closest('.fp-btn');
+    if(!b) return;
+    var pg=b.closest('.figpager'); if(!pg) return;
+    e.preventDefault();e.stopPropagation();
+    var pages=[].slice.call(pg.querySelectorAll(':scope > .figpage'));
+    if(!pages.length) return;
+    var cur=0;
+    pages.forEach(function(p,i){
+      if(p.classList.contains('current')) cur=i;});
+    var nx=(cur+(b.classList.contains('fp-next')?1:-1)
+      +pages.length)%pages.length;
+    pages[cur].classList.remove('current');
+    pages[nx].classList.add('current');
+    var ct=pg.querySelector('.fp-count');
+    if(ct) ct.textContent=(nx+1)+' / '+pages.length;
+  },true);
 
   /* ---- presentations rail: full -> icons -> hidden (edge handle
      brings it back) ---- */
@@ -2322,21 +2582,58 @@ _JS = r"""
     }
   },true);
 
-  /* ---- hamburger (mobile): toggles the ACTIVE tab's section rail ---- */
+  /* ---- ☰ toggles the section sidebar (TOC). Desktop: body.tocshow
+     (hidden by default, pref persisted); mobile keeps the slide-in. */
   var menuBtn=$('#menubtn');
+  function applyToc(show){
+    document.body.classList.toggle('tocshow',show);
+    if(menuBtn) menuBtn.setAttribute('aria-pressed',
+      show?'true':'false');
+    try{localStorage.setItem('plotline-toc',
+      show?'open':'hidden');}catch(e){}
+  }
+  var tocPref=null;
+  try{tocPref=localStorage.getItem('plotline-toc');}catch(e){}
+  applyToc(tocPref==='open');
   if(menuBtn) menuBtn.addEventListener('click',function(){
-    var sh=APP.active&&APP.shells[APP.active];
-    if(!sh) return;
-    var rail=$('.rail',sh.el);
-    if(rail){rail.classList.toggle('open');
-      if(scrim) scrim.classList.toggle('show');}
+    if(window.matchMedia
+       &&window.matchMedia('(max-width:860px)').matches){
+      var sh=APP.active&&APP.shells[APP.active];
+      if(!sh) return;
+      var rail=$('.rail',sh.el);
+      if(rail){rail.classList.toggle('open');
+        if(scrim) scrim.classList.toggle('show');}
+      return;
+    }
+    applyToc(!document.body.classList.contains('tocshow'));
   });
 
+  /* huge markdown notes: clamp with a Show more toggle */
+  function mdClampScan(shell){
+    $$('.card[data-note="1"] .cardbody',shell).forEach(function(bd){
+      if(bd.dataset.mdclamp) return;
+      var nt=$('.note',bd); if(!nt) return;
+      if(nt.scrollHeight<=460) return;
+      bd.dataset.mdclamp='1';
+      bd.classList.add('mdclamp');
+      var btn=document.createElement('button');
+      btn.className='mdmore';
+      btn.textContent='Show more';
+      btn.title='This note is long — expand it to full length';
+      btn.addEventListener('click',function(){
+        var open=bd.classList.toggle('mdopen');
+        btn.textContent=open?'Show less':'Show more';
+      });
+      bd.parentNode.insertBefore(btn,bd.nextSibling);
+    });
+  }
+  APP.mdscan=mdClampScan;
   function initShell(shell){
     var data={};
     var de=$('.nb-data',shell);
     if(de){try{data=JSON.parse(de.textContent);}catch(e){}}
     var stem=shell.dataset.nb||data.stem||('nb-'+(APP.order.length+1));
+    mdClampScan(shell);
 
     /* ---- reveal on scroll ---- */
     var cards=$$('.card',shell);
@@ -2494,15 +2791,33 @@ _JS = r"""
     if(window.MathJax&&MathJax.typesetPromise)
       MathJax.typesetPromise([shell]).catch(function(){});
   }
+  /* one open per source at a time: repeated Enter/clicks are ignored
+     while the fetch runs, and the dialog shows a loading bar */
+  var OPENBUSY={},dlgBusyN=0;
+  function setDlgBusy(b){
+    /* counter, not flag: several sources can load at once and the
+       dialog stays locked until the last one settles */
+    dlgBusyN=Math.max(0,dlgBusyN+(b?1:-1));
+    var on=dlgBusyN>0;
+    var go=$('#odlg-go'),inp=$('#odlg-input'),ld=$('#odlg-load');
+    if(go){go.disabled=on;go.textContent=on?'Opening…':'Open';}
+    if(inp) inp.disabled=on;
+    if(ld) ld.hidden=!on;
+  }
   function openPath(path){
     if(APP.mode==='web'){
       if(isUrl(path)) webOpenUrl(path,false);
       return;
     }
+    if(OPENBUSY[path]) return;
+    OPENBUSY[path]=1;setDlgBusy(true);
     api('/api/open',{path:path}).then(function(j){
+      delete OPENBUSY[path];setDlgBusy(false);
       mountShellHTML(j.shell,j.path||path);
       hideDlg();
-    }).catch(function(e){alert('Open failed: '+e.message);});
+    }).catch(function(e){
+      delete OPENBUSY[path];setDlgBusy(false);
+      alert('Open failed: '+e.message);});
   }
   APP.openPath=openPath;
   function closeNotebook(stem){
@@ -2515,7 +2830,7 @@ _JS = r"""
       APP.active=null;
       if(APP.order.length)
         activate(APP.order[Math.min(Math.max(i,0),APP.order.length-1)]);
-      else{renderRawBtn();renderRefreshBtn();}
+      else renderRawBtn();
     }
     renderTabs();
     document.dispatchEvent(new CustomEvent('sem:shellclosed',
@@ -2559,6 +2874,16 @@ _JS = r"""
   }
   function webOpenUrl(url,silent){
     url=normNbUrl(url);
+    var pend=OPENBUSY[url];
+    if(pend){
+      /* already loading; a real click on a silently-restoring URL
+         surfaces the busy UI instead of dying quietly */
+      if(!silent&&pend.s){pend.s=false;setDlgBusy(true);}
+      return;
+    }
+    pend=OPENBUSY[url]={s:silent};
+    if(!silent) setDlgBusy(true);
+    function done(){delete OPENBUSY[url];if(!pend.s) setDlgBusy(false);}
     fetch(url).then(function(r){
       if(!r.ok) throw new Error('HTTP '+r.status);
       return r.text();
@@ -2569,9 +2894,12 @@ _JS = r"""
       var shell=window.semPy.parse(name,txt,APP.order);
       mountShellHTML(shell,url);
       webNote(url);
+      done();
       hideDlg();
     }).catch(function(e){
-      if(silent){
+      var wasSilent=pend.s;
+      done();
+      if(wasSilent){
         webUnnote(url);
         return;
       }
@@ -2615,7 +2943,7 @@ _JS = r"""
       if(fb) fb.hidden=false;
       if(dlgPath) dlgPath.textContent='Open notebooks';
       if(inp) inp.placeholder='…or paste a notebook URL '
-        +'(GitHub links work) and press Enter';
+        +'(GitHub links work) and hit Open';
       dlgList.innerHTML='<div class="odlg-empty">Drop .ipynb files '
         +'anywhere in the window, use &#8220;Choose files&#8230;&#8221;, '
         +'or paste a URL below.<br><br>Everything runs in your browser '
@@ -2623,7 +2951,7 @@ _JS = r"""
       return;
     }
     if(inp) inp.placeholder='…or paste a folder, .ipynb path or URL '
-      +'and press Enter';
+      +'and hit Open';
     listDir(dlgDir||APP.root||'');
   }
   function listDir(dir){
@@ -2694,8 +3022,8 @@ _JS = r"""
     if(dlg) dlg.addEventListener('click',function(e){
       if(e.target===dlg) hideDlg();});
     var inp=$('#odlg-input');
-    if(inp) inp.addEventListener('keydown',function(e){
-      if(e.key!=='Enter') return;
+    function submitOpenInput(){
+      if(!inp||inp.disabled) return;
       var v=inp.value.trim(); if(!v) return;
       if(isWeb){
         if(isUrl(v)) webOpenUrl(v,false);
@@ -2705,7 +3033,13 @@ _JS = r"""
       }
       if(isUrl(v)||/\.ipynb$/i.test(v)) openPath(v);
       else listDir(v);
+    }
+    if(inp) inp.addEventListener('keydown',function(e){
+      if(e.key!=='Enter') return;
+      submitOpenInput();
     });
+    var goBtn=$('#odlg-go');
+    if(goBtn) goBtn.addEventListener('click',submitOpenInput);
     document.addEventListener('keydown',function(e){
       if(e.key==='Escape'&&dlg&&!dlg.hidden) hideDlg();
     });
@@ -2763,7 +3097,6 @@ _JS = r"""
   if(APP.order.length) activate(APP.order[0]);
   else renderTabs();
   renderRawBtn();
-  renderRefreshBtn();
 })();
 """
 
@@ -2791,6 +3124,8 @@ _DECK_HTML = """
   </div>
   <div class="deck-main">
     <aside class="deck-create" id="deck-create" hidden>
+      <div class="dc-resize" id="dc-resize"
+        title="Drag to resize the builder panel"></div>
       <div class="dc-head">
         <button class="dbtn primary" id="dc-play"
           title="Play the presentation fullscreen">&#9654; Present</button>
@@ -2813,6 +3148,7 @@ _DECK_HTML = """
             <button class="dc-mi" id="mi-del">Delete presentation</button>
           </div>
         </div>
+        <button class="dbtn" id="dc-save">Save</button>
         <span class="deck-status" id="deck-status"></span>
         <span class="dc-spring"></span>
         <button class="dbtn" id="dc-close"
@@ -3063,7 +3399,12 @@ body.deck-open{overflow:hidden;}
   min-width:0;gap:12px;}
 .vo-title{flex:none;font-family:var(--mono);font-size:10.5px;
   letter-spacing:.18em;text-transform:uppercase;color:#7e93a4;
-  text-align:center;}
+  text-align:center;display:flex;gap:10px;align-items:center;
+  justify-content:center;flex-wrap:wrap;}
+.vo-xall{font-family:var(--mono);font-size:10px;letter-spacing:.06em;
+  text-transform:none;background:#ffffff0a;border:1px solid #ffffff22;
+  color:#cdd9e3;border-radius:5px;padding:3px 9px;cursor:pointer;}
+.vo-xall:hover{border-color:var(--cyan);color:#fff;}
 .vo-plots{flex:none;display:flex;gap:16px;justify-content:center;
   flex-wrap:wrap;}
 .vo-plot{display:flex;flex-direction:column;align-items:center;gap:6px;
@@ -3233,7 +3574,7 @@ body.deck-open{overflow:hidden;}
   border-color:#ffffff14;color:#b6c6d3;}
 
 /* ---------- create mode: deck docks left, document stays interactive */
-.deck.creating{width:min(352px,94vw);right:auto;
+.deck.creating{width:min(var(--dc-w),94vw);right:auto;
   border-right:1px solid #ffffff22;box-shadow:8px 0 40px #00000055;}
 .deck.creating .deck-stagewrap{display:none;}
 .deck.creating .deck-top{display:none;}
@@ -3251,13 +3592,20 @@ body.deck-open{overflow:hidden;}
   border-radius:5px;cursor:pointer;transition:background .12s;}
 .dc-mi:hover{background:#39a9c026;}
 .dc-msep{height:1px;background:#ffffff14;margin:4px 6px;}
-body.creating-docs .docs{margin-left:min(352px,94vw);}
+body.creating-docs .docs{margin-left:min(var(--dc-w),94vw);}
 body.creating-docs .card{cursor:copy;}
 body.creating-docs .card:hover{outline:2px solid var(--cyan);
   outline-offset:2px;}
 
 .deck-create{flex:1;overflow-y:auto;display:flex;flex-direction:column;
   min-height:0;background:#0e1926;}
+/* fixed so it hugs the panel's right edge in both creating (docked
+   deck) and editing (flex column) modes, and survives panel scroll */
+.dc-resize{position:fixed;top:0;bottom:0;width:6px;z-index:130;
+  cursor:col-resize;
+  left:calc(var(--presrail-w) + min(var(--dc-w),94vw) - 1px);}
+.dc-resize:hover,.dc-resize.on{background:#39a9c066;}
+@media(max-width:860px){.dc-resize{display:none;}}
 .dc-block{padding:14px 14px 12px;border-bottom:1px solid #ffffff14;}
 .dc-block.dc-film{flex:1;display:flex;flex-direction:column;min-height:120px;
   border-bottom:none;padding-bottom:8px;}
@@ -3324,11 +3672,19 @@ body.creating-docs .card:hover{outline:2px solid var(--cyan);
    and comes back for cell-picking / on Done. */
 .deck.editing{left:var(--presrail-w);top:0;}
 body.slide-editing .apptop{display:none;}
-.deck.editing .deck-create{flex:0 0 352px;
+.deck.editing .deck-create{flex:0 0 var(--dc-w);
   border-right:1px solid #ffffff22;}
 .edit-tools{display:flex;align-items:center;gap:7px;flex-wrap:wrap;
   padding:9px 16px;border-bottom:1px solid #ffffff14;
   background:#0e1926;flex:none;}
+/* the format bar keeps its row reserved (visibility, not display) and
+   scrolls instead of wrapping — the canvas below must NEVER shift when
+   a selection appears */
+.et-fmt{flex-basis:100%;display:flex;align-items:center;gap:7px;
+  flex-wrap:nowrap;overflow-x:auto;min-height:30px;
+  scrollbar-width:thin;}
+.et-fmt>*{flex:none;}
+.et-fmt[hidden]{display:flex;visibility:hidden;}
 .et-label{font-family:var(--mono);font-size:10px;letter-spacing:.18em;
   text-transform:uppercase;color:var(--amber);}
 .et-hint{font-size:11px;color:#7e93a4;}
@@ -3434,6 +3790,21 @@ ul.an-ul li{margin:.18em 0;white-space:pre-wrap;}
   align-items:center;justify-content:center;overflow:hidden;
   border:none;padding:6px;}
 .an-cell .figframe+.figframe{border-top:1px solid #ffffff10;}
+.an-cell .figpager{flex:1;min-height:0;display:flex;
+  flex-direction:column;}
+.an-cell .figpager .figpage{display:none;}
+.an-cell .figpager .figpage.current{flex:1;min-height:0;display:flex;
+  flex-direction:column;}
+.an-cell .fp-btn{background:transparent;border-color:#ffffff22;
+  color:#cdd9e3;}
+.an-cell .fp-count{color:#7e93a4;}
+.an-cell .cardbody.mdclamp,.spane .cardbody.mdclamp{max-height:none;}
+.an-cell .cardbody.mdclamp::after,
+.spane .cardbody.mdclamp::after{display:none;}
+.spane .figpager{flex:1;min-height:0;display:flex;
+  flex-direction:column;}
+.spane .figpager .figpage.current{flex:1;min-height:0;display:flex;
+  flex-direction:column;}
 .an-cell .figframe img{max-width:100%;max-height:100%;width:auto;
   height:auto;object-fit:contain;margin:0;}
 .an-cell .note{flex:1;min-height:0;overflow:auto;background:#f7fafc;
@@ -3751,14 +4122,34 @@ _DECK_JS = r"""
   else if(allSaved().length) loadPresentation(allSaved()[0].name);
   else {pres=defaultPres();source='auto';}
 
+  var saveStamp=null,saveKind='';
+  function fmtT(d){
+    var h=d.getHours(),m=d.getMinutes();
+    return (h<10?'0':'')+h+':'+(m<10?'0':'')+m;
+  }
   function status(){
     var el=$('#deck-status');
-    el.textContent=source==='draft'?'unsaved draft'
-      :(source==='saved'?'saved':'auto');
+    var auto=APP.mode==='app'
+      &&(typeof autosaveOn==='undefined'||autosaveOn);
+    if(source==='draft'){
+      if(APP.mode!=='app'&&saveKind==='manual'&&saveStamp){
+        el.textContent='in this browser · '+fmtT(saveStamp);
+        el.className='deck-status saved';
+        return;
+      }
+      el.textContent=auto?'unsaved — autosaving…'
+        :(APP.mode==='app'?'unsaved draft'
+          :'draft — kept in this browser');
+    } else if(source==='saved'){
+      el.textContent=saveStamp
+        ?((saveKind==='auto'?'autosaved ':'saved ')+fmtT(saveStamp))
+        :'saved';
+    } else el.textContent='auto';
     el.className='deck-status '+source;
   }
   function markDirty(){
     source='draft';
+    saveKind='';
     lsSet(PFX+(pres.name||'untitled'),JSON.stringify(pres));
     lsSet(PFX+'last',pres.name||'untitled');
     status();
@@ -3908,11 +4299,29 @@ _DECK_JS = r"""
     box.appendChild(h);box.appendChild(body);
     return box;
   }
+  function setAllSteps(v,open){
+    $$('.vo-step',v).forEach(function(box){
+      if(open===box.classList.contains('open')) return;
+      if(open) box.querySelector('.vo-step-h').click();
+      else box.classList.remove('open');
+    });
+  }
   function buildTrace(){
     var multi=vGroups.length>1;
     var v=document.createElement('div');v.className='vtrace';
     var tl=document.createElement('div');tl.className='vo-title';
-    tl.textContent='code trace — click a step to expand it';
+    var ts=document.createElement('span');
+    ts.textContent='code trace — click a step to expand it';
+    tl.appendChild(ts);
+    var xa=document.createElement('button');xa.className='vo-xall';
+    xa.textContent='Expand all';
+    xa.title='Open the code of every step';
+    xa.addEventListener('click',function(){setAllSteps(v,true);});
+    var ca=document.createElement('button');ca.className='vo-xall';
+    ca.textContent='Collapse all';
+    ca.title='Fold every step back down';
+    ca.addEventListener('click',function(){setAllSteps(v,false);});
+    tl.appendChild(xa);tl.appendChild(ca);
     v.appendChild(tl);
     if(multi){
       var strip=document.createElement('div');strip.className='vo-plots';
@@ -5393,6 +5802,16 @@ _DECK_JS = r"""
   if(upBtn) upBtn.addEventListener('click',scrollToSlide);
   var vfClose=$('#vfull-close');
   if(vfClose) vfClose.addEventListener('click',closeVFull);
+  document.addEventListener('fullscreenchange',function(){
+    /* Esc always exits browser fullscreen (the page cannot prevent
+       it), so Esc while presenting leaves the presentation entirely —
+       never a windowed half-presentation state. Inner layers (the code
+       overlay, the trace) close via their own ✕ / scroll instead. */
+    if(document.fullscreenElement) return;
+    if(mode!=='view'||deckEl.hidden) return;
+    closeVFull();
+    setUIMode('create');
+  });
   document.addEventListener('keydown',function(e){
     if(picking>=0){
       if(e.key==='Escape'){e.preventDefault();endPick();}
@@ -5633,6 +6052,7 @@ _DECK_JS = r"""
       .then(function(){
         projectPres=merged;
         lsDel(PFX+(pres.name||'untitled'));
+        saveStamp=new Date();saveKind=silent?'auto':'manual';
         source='saved';status();renderPresRow();
         if(!silent)
           toast('Saved "'+pres.name+'" to plotline_project.json');
@@ -5659,11 +6079,44 @@ _DECK_JS = r"""
     closeMenu();
     autosaveOn=!autosaveOn;
     lsSet(AUTOKEY,autosaveOn?'1':'0');
-    renderAutosaveItem();
+    renderAutosaveItem();renderSaveBtn();status();
     if(autosaveOn){scheduleAutosave();toast('Autosave on');}
-    else toast('Autosave off — use File › Save to project');
+    else toast('Autosave off — use the Save button');
   });
   renderAutosaveItem();
+
+  /* always-visible Save button; the File menu keeps the rest */
+  var saveBtn=$('#dc-save');
+  function renderSaveBtn(){
+    if(!saveBtn) return;
+    if(APP.mode==='app'){
+      saveBtn.setAttribute('data-tip','Save now to '
+        +'plotline_project.json'
+        +(autosaveOn
+          ?' — autosave is ON: every change saves itself about a '
+            +'second later'
+          :' — autosave is OFF, only this button saves'));
+    } else {
+      saveBtn.setAttribute('data-tip','Presentations are kept in '
+        +'this browser automatically as you edit — Save confirms '
+        +'it; use File › Download JSON for a shareable file');
+    }
+    saveBtn.removeAttribute('title');
+  }
+  if(saveBtn) saveBtn.addEventListener('click',function(){
+    if(APP.mode==='app'){
+      if(!requireName()) return;
+      saveToProject(false);
+      return;
+    }
+    lsSet(PFX+(pres.name||'untitled'),JSON.stringify(pres));
+    lsSet(PFX+'last',pres.name||'untitled');
+    saveStamp=new Date();saveKind='manual';
+    status();
+    toast('Kept in this browser — it also autosaves as you edit. '
+      +'File › Download JSON gives you a file.');
+  });
+  renderSaveBtn();
 
   /* direct save-into-.ipynb is parked for now (kept for later) */
   var ENABLE_SAVE_TO_IPYNB=false;
@@ -5700,6 +6153,7 @@ _DECK_JS = r"""
           nbPres=mergedPresentations().map(function(p){
             var c=normPres(p,null);c.origin=stem0;return c;});
           lsDel(PFX+(pres.name||'untitled'));
+          saveStamp=new Date();saveKind='manual';
           source='saved';status();renderPresRow();
           toast('Saved "'+pres.name+'" into '+f.name);
         }catch(e){
@@ -5860,13 +6314,11 @@ _TEMPLATE = """<!doctype html>
 <header class="apptop" id="apptop">
   <div class="appbar">
     <span class="apptop-brand">PlotLine</span>
-    <button class="menubtn" id="menubtn"
-      aria-label="Toggle sections"><span></span></button>
+    <button class="menubtn" id="menubtn" aria-label="Toggle sections"
+      title="Show or hide the section sidebar (table of contents)">
+      <span></span></button>
     <button class="tab-openbtn" id="tab-open" hidden
       title="Open notebooks">+ Open</button>
-    <button class="toggle refresh" id="refresh-btn" hidden
-      title="Reload the current notebook from its source">&#8635;
-      Refresh</button>
     <button class="toggle tv" id="tv-figs"
       title="Show or hide figure cards"></button>
     <button class="toggle tv" id="tv-markup"
@@ -5967,8 +6419,14 @@ _TEMPLATE = """<!doctype html>
     </div>
     <div class="odlg-list" id="odlg-list"></div>
     <div class="odlg-foot">
-      <input id="odlg-input" type="text" spellcheck="false" autocomplete="off"
-        placeholder="&#8230;or paste a folder or .ipynb path and press Enter">
+      <div class="odlg-inrow">
+        <input id="odlg-input" type="text" spellcheck="false"
+          autocomplete="off"
+          placeholder="&#8230;or paste a folder or .ipynb path">
+        <button class="dbtn" id="odlg-go"
+          title="Open the path or URL typed on the left">Open</button>
+      </div>
+      <div class="odlg-load" id="odlg-load" hidden><span></span></div>
     </div>
   </div>
 </div>
@@ -6527,6 +6985,19 @@ def _self_test() -> None:
             {"cell_type": "code", "id": "c-fig2",
              "source": "#| display: figure\n#| id: fig2\n#| title: Second figure\nplot(ds)",
              "outputs": []},
+            {"cell_type": "code", "id": "c-two",
+             "source": "#| display: figure\n#| id: two\n#| title: Two panels\nplot(); plot()",
+             "outputs": [
+                 {"output_type": "display_data",
+                  "data": {"image/png": "aGk="}},
+                 {"output_type": "display_data",
+                  "data": {"image/png": "aGk="}}]},
+            {"cell_type": "code", "id": "c-fn",
+             "source": "def rescale(arr):\n    return arr / arr.max()",
+             "outputs": []},
+            {"cell_type": "code", "id": "c-one",
+             "source": "result = rescale(data)",
+             "outputs": []},
         ]
     }
     doc = parse_notebook(nb)
@@ -6566,6 +7037,35 @@ def _self_test() -> None:
     assert mixed.kind == "figure"
     assert "alsoprinted" in out and "also printed by this cell" in out
 
+    # several figures from one cell -> pager, one figure at a time
+    assert 'class="figpager" data-n="2"' in out
+    assert 'class="figpage current"' in out and "fp-next" in out
+    assert "1 / 2" in out
+    # nav key legend + long-markdown clamp plumbing shipped
+    assert 'class="navkey"' in out and 'class="nk k-figure"' in out
+    assert "mdClampScan" in out and "mdclamp" in out
+    assert "vo-xall" in out and "fullscreenchange" in out
+
+    # untitled code cells: function names become titles; a bare code
+    # line labels the nav but is not repeated as a card heading
+    all_items = [it for s in doc.sections for it in s.items]
+    assert any(it.title == "rescale()" and not it.title_echo
+               for it in all_items)
+    assert any(it.title == "result = rescale(data)" and it.title_echo
+               for it in all_items)
+    assert 'cardtitle echo' in out
+    assert _title_from_code("def a():\n    pass\n\ndef b():\n    pass") \
+        == ("2 functions (a, b)", False)
+    assert _title_from_code(
+        "import x\n\ndef a():\n    pass\n\ndef b():\n    pass") \
+        == ("2 functions + code", False)
+    # chrome: TOC toggle, resizable builder, dark document, tab refresh
+    assert 'id="menubtn"' in out and "tocshow" in out
+    assert 'id="dc-resize"' in out and "--dc-w" in out
+    assert 'id="dc-save"' in out
+    assert "body:not(.light) .card" in out
+    assert 'id="refresh-btn"' not in out
+
     # new slide layouts, title slides and annotations survive normalizing
     pres2 = _as_presentations([{"name": "n", "slides": [
         {"layout": "rows", "panes": ["a"]},
@@ -6580,7 +7080,7 @@ def _self_test() -> None:
     assert 'id="edit-tools"' in out and 'id="dc-edit"' in out
     assert 'id="et-fmt"' in out and 'data-tool="cell"' in out
     assert 'id="fmt-op"' in out and 'id="fmt-rotl"' in out
-    assert 'id="theme-btn"' in out and 'id="refresh-btn"' in out
+    assert 'id="theme-btn"' in out
     assert 'id="fmt-font"' in out and "body.light .apptop" in out
     assert "apptip" in out
     assert 'id="fmt-list"' in out and 'id="fmt-shape"' in out
