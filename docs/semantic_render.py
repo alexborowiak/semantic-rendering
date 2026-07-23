@@ -3679,8 +3679,8 @@ _DECK_HTML = """
           </div>
         </div>
         <button class="dbtn" id="dc-save">Save</button>
-        <span class="deck-status" id="deck-status"></span>
         <span class="dc-spring"></span>
+        <span class="deck-status" id="deck-status"></span>
         <button class="dbtn" id="dc-close"
           title="Close the builder, back to the documents (Esc)">&#10005;
           Close</button>
@@ -4054,7 +4054,7 @@ body.deck-open{overflow:hidden;}
   padding-left:0;}
 .slide-fig .figframe{flex:1;min-height:0;display:flex;align-items:center;
   justify-content:center;border:none;border-radius:10px;padding:14px;
-  overflow:hidden;box-shadow:0 10px 40px #00000055;}
+  overflow:hidden;background:none;}
 .slide-fig .figframe img{max-width:100%;max-height:100%;width:auto;height:auto;
   object-fit:contain;margin:0;}
 .slide-fig .note{background:#f7fafc;color:var(--ink-2);border-radius:12px;
@@ -4353,7 +4353,7 @@ ul.an-ul li{margin:.18em 0;white-space:pre-wrap;}
 .vpage .an-cell{border:none;background:none;}
 .vpage .an-cellhead{display:none;}
 .an-cellhead{flex:none;display:flex;align-items:center;gap:8px;
-  padding:8px 12px 0;min-width:0;}
+  padding:8px 30px 0 12px;min-width:0;}
 .an-cellhead-t{font-size:13px;font-weight:600;color:#dbe7ef;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;
   min-width:0;}
@@ -4368,6 +4368,9 @@ ul.an-ul li{margin:.18em 0;white-space:pre-wrap;}
 .an-cell .figframe{flex:1;min-height:0;display:flex;
   align-items:center;justify-content:center;overflow:hidden;
   border:none;padding:6px;}
+/* a frame wider/taller than its figure shows TRANSPARENT space around
+   the plot, not a white box (the plot keeps its own background) */
+.an-cell .figframe,.spane .figframe{background:none;}
 .an-cell .figframe+.figframe{border-top:1px solid #ffffff10;}
 .an-cell .figpager{flex:1;min-height:0;display:flex;
   flex-direction:column;}
@@ -4408,8 +4411,10 @@ ul.an-ul li{margin:.18em 0;white-space:pre-wrap;}
 .an-cellpart{font-family:var(--mono);font-size:9px;letter-spacing:.08em;
   text-transform:uppercase;color:#7fb6c6;background:#39a9c022;
   border-radius:4px;padding:1px 6px;flex:none;}
-.cellparts{position:absolute;top:5px;left:5px;z-index:5;display:none;
-  gap:3px;flex-wrap:wrap;max-width:70%;}
+/* the code/figure/output picker sits along the BOTTOM of the frame so
+   it never covers the title header or the part badge at the top */
+.cellparts{position:absolute;bottom:5px;left:5px;right:5px;z-index:5;
+  display:none;gap:3px;flex-wrap:wrap;justify-content:center;}
 .deck.editing .an-cell:hover .cellparts,
 .deck.editing .an-cell.sel .cellparts,
 .pane.filled:hover .cellparts,.pane.filled.active .cellparts{
@@ -4756,19 +4761,19 @@ _DECK_JS = r"""
     var auto=APP.mode==='app'
       &&(typeof autosaveOn==='undefined'||autosaveOn);
     if(source==='draft'){
+      /* web/static Save writes to the browser but keeps source='draft';
+         show a plain 'saved' — the Save button tooltip explains where */
       if(APP.mode!=='app'&&saveKind==='manual'&&saveStamp){
-        el.textContent='in this browser · '+fmtT(saveStamp);
+        el.textContent='saved · '+fmtT(saveStamp);
         el.className='deck-status saved';
         return;
       }
-      el.textContent=auto?'unsaved — autosaving…'
-        :(APP.mode==='app'?'unsaved draft'
-          :'draft — kept in this browser');
+      el.textContent=auto?'unsaved — saving…':'unsaved';
     } else if(source==='saved'){
       el.textContent=saveStamp
-        ?((saveKind==='auto'?'autosaved ':'saved ')+fmtT(saveStamp))
+        ?((saveKind==='auto'?'autosaved · ':'saved · ')+fmtT(saveStamp))
         :'saved';
-    } else el.textContent='auto';
+    } else el.textContent='';
     el.className='deck-status '+source;
   }
   function markDirty(){
