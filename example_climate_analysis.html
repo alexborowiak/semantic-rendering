@@ -80,6 +80,28 @@ body{margin:0;font-family:var(--sans);color:var(--ink);
   border-radius:50%;}
 .navitem.k-code .dot,.nk.k-code .dot{background:#56627033;
   border:1px solid #ffffff22;}
+.navitem.ckmain-imports .dot,.nk.ckmain-imports .dot{background:#a3855c;}
+.navitem.ckmain-function .dot,.nk.ckmain-function .dot{background:#46a892;}
+.navitem.ckmain-data .dot,.nk.ckmain-data .dot{background:#4d90c0;}
+.navitem.ckmain-constant .dot,.nk.ckmain-constant .dot{background:#9a7cc0;}
+.navitem.ckmain-settings .dot,.nk.ckmain-settings .dot{background:#5b7589;}
+.navitem.ckmain-plotting .dot,.nk.ckmain-plotting .dot{background:#39a9c0;}
+.navitem.ckmain-print .dot,.nk.ckmain-print .dot{background:#cf9a4e;}
+/* light theme needs its own — a generic body.light .dot outranks these */
+body.light .navitem.ckmain-imports .dot,body.light .nk.ckmain-imports .dot{
+  background:#a3855c;}
+body.light .navitem.ckmain-function .dot,body.light .nk.ckmain-function .dot{
+  background:#46a892;}
+body.light .navitem.ckmain-data .dot,body.light .nk.ckmain-data .dot{
+  background:#4d90c0;}
+body.light .navitem.ckmain-constant .dot,body.light .nk.ckmain-constant .dot{
+  background:#9a7cc0;}
+body.light .navitem.ckmain-settings .dot,body.light .nk.ckmain-settings .dot{
+  background:#5b7589;}
+body.light .navitem.ckmain-plotting .dot,body.light .nk.ckmain-plotting .dot{
+  background:#39a9c0;}
+body.light .navitem.ckmain-print .dot,body.light .nk.ckmain-print .dot{
+  background:#cf9a4e;}
 
 /* ---------- nav key (what the dot colours mean) ---------- */
 .navkey{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center;
@@ -219,6 +241,23 @@ body:not(.light) .docbar-p{color:#8ba0b2;}
 .k-transform .badge{background:#5b758914;color:#41566a;}
 .k-metric .badge{background:#46a89214;color:#2c8c7d;}
 .k-note .badge{background:#cf9a4e1f;color:#8a6326;}
+/* code subtypes (base rules read on the light paper theme) */
+.ckmain-imports .badge{background:#8a6d4a1a;color:#7a5e38;}
+.ckmain-function .badge{background:#46a89218;color:#2c8c7d;}
+.ckmain-data .badge{background:#4d90c018;color:#2f6f9e;}
+.ckmain-constant .badge{background:#9a7cc01f;color:#6d4f95;}
+.ckmain-settings .badge{background:#5b758918;color:#41566a;}
+.ckmain-plotting .badge{background:#39a9c018;color:var(--cyan-deep);}
+.ckmain-print .badge{background:#cf9a4e1f;color:#8a6326;}
+/* dark theme (default) needs its own — a generic dark .badge otherwise
+   outranks the base rules above */
+body:not(.light) .ckmain-imports .badge{background:#8a6d4a2b;color:#c8a877;}
+body:not(.light) .ckmain-function .badge{background:#46a8922b;color:#7fd0bd;}
+body:not(.light) .ckmain-data .badge{background:#4d90c02b;color:#8fbfe0;}
+body:not(.light) .ckmain-constant .badge{background:#9a7cc02b;color:#c3a9e0;}
+body:not(.light) .ckmain-settings .badge{background:#5b75892b;color:#a7bccd;}
+body:not(.light) .ckmain-plotting .badge{background:#39a9c02b;color:#5fc3d8;}
+body:not(.light) .ckmain-print .badge{background:#cf9a4e2b;color:#dfb277;}
 .cardtitle{font-size:16px;font-weight:600;margin:0;letter-spacing:-.01em;
   flex:1;min-width:0;}
 /* titles that merely echo the first code line label the item in the
@@ -279,6 +318,13 @@ pre.result,pre.stream,pre.error{font-family:var(--mono);font-size:12px;
   background:var(--paper-2);border:1px solid var(--paper-3);
   border-radius:7px;padding:11px 13px;overflow:auto;margin:0;line-height:1.45;}
 pre.error{background:#fbf0ee;border-color:#f0d2cc;color:#8a3221;}
+/* a huge printout (1000s of lines) scrolls inside a capped box in the
+   document + raw views instead of running the whole page on. Short
+   outputs are unaffected; slide frames keep their own sizing. */
+.content pre.result,.content pre.stream,.content pre.error,
+.content .rich,.content .xr-wrap,.content .alsoinner,
+.rawview pre.result,.rawview pre.stream,.rawview .rich,
+.rawview .xr-wrap{max-height:min(440px,62vh);overflow:auto;}
 .card.k-metric .cardbody pre.result{font-size:14px;
   background:#46a8920d;border-color:#46a89233;color:#1f5f54;
   font-weight:500;}
@@ -703,6 +749,33 @@ body.creating-docs .apptop{
   body:not(.tocshow) .nbshell .rail{display:none;}
 }
 
+/* ---------- advanced code-type filter menu ---------- */
+.ckfilter-menu{position:fixed;z-index:200;background:#16273a;
+  border:1px solid #ffffff22;border-radius:8px;padding:8px;
+  box-shadow:0 12px 40px #00000066;min-width:150px;}
+.ckfilter-menu[hidden]{display:none;}
+.ckf-h{font-family:var(--mono);font-size:9px;letter-spacing:.14em;
+  text-transform:uppercase;color:#7e93a4;padding:2px 6px 6px;}
+.ckf-row{display:flex;align-items:center;gap:8px;padding:5px 6px;
+  font-family:var(--mono);font-size:11.5px;color:#cdd9e3;cursor:pointer;
+  border-radius:5px;text-transform:capitalize;}
+.ckf-row:hover{background:#ffffff0c;}
+.ckf-row input{cursor:pointer;}
+.ckf-dot{width:8px;height:8px;border-radius:3px;flex:none;background:#8ba0b2;}
+.ckf-dot.ckmain-imports{background:#a3855c;}
+.ckf-dot.ckmain-function{background:#46a892;}
+.ckf-dot.ckmain-data{background:#4d90c0;}
+.ckf-dot.ckmain-constant{background:#9a7cc0;}
+.ckf-dot.ckmain-settings{background:#5b7589;}
+.ckf-dot.ckmain-plotting{background:#39a9c0;}
+.ckf-dot.ckmain-print{background:#cf9a4e;}
+.ckf-empty{color:#7e93a4;font-size:11px;padding:8px;}
+#ck-filter-btn.on{border-color:var(--cyan);color:#fff;background:#39a9c022;}
+body.light .ckfilter-menu{background:#fff;border-color:var(--line);}
+body.light .ckf-row{color:var(--ink-2);}
+body.light .ckf-row:hover{background:#00000008;}
+body.light .ckf-h{color:var(--ink-3);}
+
 /* ---------- instant tooltips (replaces slow native titles) -------- */
 .apptip{position:fixed;z-index:300;background:#0e1926;color:#dce6ee;
   font-family:var(--sans);font-size:11.5px;line-height:1.45;
@@ -779,6 +852,11 @@ body.light .dc-presname{color:var(--ink);}
 body.light #pres-name,body.light .title-editor input{
   background:#fff;border-color:var(--line);color:var(--ink);}
 body.light .dc-hint{color:var(--ink-3);}
+body.light .dc-nbs-l{color:var(--ink-3);}
+body.light .dc-nb{color:var(--cyan-deep);background:#39a9c012;
+  border-color:#39a9c033;}
+body.light .dc-nb.missing{color:#8a5a1e;background:#cf9a4e14;
+  border-color:#cf9a4e40;}
 body.light .dc-menu{background:#fff;border-color:var(--line);}
 body.light .dc-mi{color:var(--ink-2);}
 body.light .dc-mi:hover{background:#39a9c026;}
@@ -1063,6 +1141,14 @@ body.deck-open{overflow:hidden;}
   display:flex;align-items:center;gap:8px;min-width:0;}
 .vo-col-h span{overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;}
+/* section (## heading) + subsection (### heading) dividers in the trace */
+.vo-sec{font-family:var(--mono);font-size:10px;font-weight:600;
+  letter-spacing:.12em;text-transform:uppercase;color:#dbe7ef;
+  padding:8px 2px 4px;margin-top:6px;
+  border-bottom:1px solid #ffffff1f;}
+.vo-col>.vo-sec:first-of-type,.vo-col-h+.vo-sec{margin-top:0;}
+.vo-subsec{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;
+  color:#8ba0b2;padding:5px 2px 2px;}
 .vo-step{display:flex;flex-direction:column;background:#12202e;
   border:1px solid #ffffff14;border-radius:8px;overflow:hidden;
   flex:none;min-width:0;transition:border-color .15s;}
@@ -1103,8 +1189,11 @@ body.deck-open{overflow:hidden;}
 /* scrollable playback: the slide fills the screen, the trace flows
    beneath it — scroll (or ArrowDown) between them */
 .deck-stage.scrolly{display:block;overflow-y:auto;
-  scroll-snap-type:y proximity;}
-.vpage{height:100%;display:flex;flex-direction:column;min-width:0;
+  scroll-snap-type:y proximity;padding-top:0;padding-bottom:0;}
+/* the slide fills the viewport EXACTLY so the code trace sits fully
+   below the fold — its buttons never peek out under the slide */
+.vpage{height:100%;box-sizing:border-box;padding:22px 0 8px;
+  display:flex;flex-direction:column;min-width:0;
   scroll-snap-align:start;}
 .vtrace{scroll-snap-align:start;display:flex;flex-direction:column;
   gap:14px;padding:26px 0 60px;min-height:70%;}
@@ -1207,7 +1296,15 @@ body.deck-open{overflow:hidden;}
   transition:transform .2s;}
 .chain-h[aria-expanded="true"] .chain-chev{transform:rotate(90deg);}
 .chain-badge{font-size:9px;padding:2px 7px;border-radius:4px;
-  background:#39a9c01f;color:#5fc3d8;letter-spacing:.1em;flex:none;}
+  background:#39a9c01f;color:#5fc3d8;letter-spacing:.1em;flex:none;
+  text-transform:lowercase;}
+.chain-badge.ckmain-imports{background:#8a6d4a2b;color:#c8a877;}
+.chain-badge.ckmain-function{background:#46a8922b;color:#7fd0bd;}
+.chain-badge.ckmain-data{background:#4d90c02b;color:#8fbfe0;}
+.chain-badge.ckmain-constant{background:#9a7cc02b;color:#c3a9e0;}
+.chain-badge.ckmain-settings{background:#5b75892b;color:#a7bccd;}
+.chain-badge.ckmain-plotting{background:#39a9c02b;color:#5fc3d8;}
+.chain-badge.ckmain-print{background:#cf9a4e2b;color:#dfb277;}
 .chain-t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .chain-b{padding:0 4px 10px;}
 
@@ -1282,6 +1379,16 @@ body.creating-docs .card:hover{outline:2px solid var(--cyan);
    in the builder; keep the element for the File > Rename flow only */
 #pres-current{display:none;}
 .dc-controls{display:flex;flex-direction:column;gap:9px;}
+/* which notebooks this presentation pulls cards from */
+.dc-nbs{display:flex;flex-wrap:wrap;align-items:center;gap:5px;}
+.dc-nbs[hidden]{display:none;}
+.dc-nbs-l{font-family:var(--mono);font-size:8.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:#7e93a4;margin-right:2px;}
+.dc-nb{font-family:var(--mono);font-size:10px;color:#a9c4d3;
+  background:#39a9c018;border:1px solid #39a9c033;border-radius:20px;
+  padding:2px 9px;}
+.dc-nb.missing{color:#c9a06a;background:#cf9a4e18;
+  border-color:#cf9a4e40;}
 #pres-name{width:100%;background:#16273a;border:1px solid #ffffff22;
   color:#dce6ee;font-family:var(--sans);font-size:12.5px;padding:7px 9px;
   border-radius:6px;box-sizing:border-box;}
@@ -1434,6 +1541,10 @@ ul.an-ul li{margin:.18em 0;white-space:pre-wrap;}
   display:flex;flex-direction:column;}
 .deck.editing .an-cell{cursor:move;}
 .deck:not(.editing) .an-cell.empty{display:none;}
+/* clean playback: a frame is just its content — no header title, no
+   badge, no frame border (the editor/builder keep them for orientation) */
+.vpage .an-cell{border:none;background:none;}
+.vpage .an-cellhead{display:none;}
 .an-cellhead{flex:none;display:flex;align-items:center;gap:8px;
   padding:8px 12px 0;min-width:0;}
 .an-cellhead-t{font-size:13px;font-weight:600;color:#dbe7ef;
@@ -1534,7 +1645,9 @@ body.picking .card:hover{outline:2px solid #fff;outline-offset:2px;}
 .pane.filled .an-cell{position:absolute;inset:0;width:auto;height:auto;
   cursor:pointer;pointer-events:none;}
 .pane.active{outline:2px solid var(--cyan);outline-offset:1px;}
-.pane.empty.active{border-color:var(--cyan);}
+.pane.empty.active{border-color:var(--cyan);border-style:solid;
+  background:#39a9c018;box-shadow:0 0 0 2px #39a9c04d inset;}
+.pane.empty.active .pane-t{color:var(--cyan);}
 .pane-t{font-size:10.5px;line-height:1.35;color:#c3d2df;text-align:center;
   overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;
   -webkit-box-orient:vertical;}
@@ -1640,6 +1753,9 @@ window.MathJax = {
     <button class="toggle tv" id="tv-code"
       title="Show or hide ALL code: code cards and the code folded under
  every figure and dataset"></button>
+    <button class="toggle" id="ck-filter-btn"
+      title="Advanced: hide specific code cell types (imports, plotting,
+ …)">Types &#9662;</button>
     <button class="toggle" id="view-raw"
       title="Toggle between the semantic view and the raw notebook
  (cells in order, directives visible)">Raw notebook</button>
@@ -1689,7 +1805,7 @@ window.MathJax = {
       <h1 class="railtitle">Southern Hemisphere blocking &amp; ENSO diagnostics</h1>
       <div class="railmeta">7 figures · 1 datasets · 6 sections</div>
     </div>
-    <nav class="nav" aria-label="Analysis sections"><a class="navsec" href="#sec-overview" data-sec="overview"><span class="navsec-t">Overview</span><span class="navsec-c"></span></a><div class="navitems"><a class="navitem k-note" href="#card-note" data-item="note"><span class="dot"></span><span class="navitem-t">Note</span></a></div><a class="navsec" href="#sec-dataset" data-sec="dataset"><span class="navsec-t">Dataset</span><span class="navsec-c"></span></a><div class="navitems"><a class="navitem k-note" href="#card-note-2" data-item="note-2"><span class="dot"></span><span class="navitem-t">Dataset</span></a><a class="navitem k-code" href="#card-imports-plotting-style" data-item="imports-plotting-style"><span class="dot"></span><span class="navitem-t">Imports &amp; plotting style</span></a><a class="navitem k-transform" href="#card-grid" data-item="grid"><span class="dot"></span><span class="navitem-t">Grid &amp; time axis</span></a><a class="navitem k-transform" href="#card-modes" data-item="modes"><span class="dot"></span><span class="navitem-t">Synthetic climatology &amp; variability modes</span></a><a class="navitem k-dataset" href="#card-z500" data-item="z500"><span class="dot"></span><span class="navitem-t">Daily Z500 field, Southern Hemisphere (synthetic)</span></a><a class="navitem k-metric" href="#card-coverage" data-item="coverage"><span class="dot"></span><span class="navitem-t">Temporal &amp; spatial coverage</span></a></div><a class="navsec" href="#sec-transforms" data-sec="transforms"><span class="navsec-t">Transforms</span><span class="navsec-c"></span></a><div class="navitems"><a class="navitem k-note" href="#card-note-3" data-item="note-3"><span class="dot"></span><span class="navitem-t">Transforms</span></a><a class="navitem k-transform" href="#card-clim" data-item="clim"><span class="dot"></span><span class="navitem-t">Day-of-year climatology</span></a><a class="navitem k-transform" href="#card-anom" data-item="anom"><span class="dot"></span><span class="navitem-t">Seasonal-cycle removal -&gt; daily anomalies</span></a></div><a class="navsec" href="#sec-blocking-diagnostics" data-sec="blocking-diagnostics"><span class="navsec-t">Blocking diagnostics</span><span class="navsec-c">4</span></a><div class="navitems"><a class="navitem k-note" href="#card-note-4" data-item="note-4"><span class="dot"></span><span class="navitem-t">Blocking diagnostics</span></a><div class="navsub">Climatology</div><a class="navitem k-figure" href="#card-clim-map" data-item="clim-map"><span class="dot"></span><span class="navitem-t">DJF mean Z500 and the climatological ridge</span></a><div class="navsub">The blocking index</div><a class="navitem k-note" href="#card-note-5" data-item="note-5"><span class="dot"></span><span class="navitem-t">The blocking index</span></a><div class="navsub">Blocking frequency</div><a class="navitem k-transform" href="#card-tasman" data-item="tasman"><span class="dot"></span><span class="navitem-t">Tasman sector box-mean series</span></a><a class="navitem k-transform" href="#card-blockidx" data-item="blockidx"><span class="dot"></span><span class="navitem-t">Blocking threshold &amp; DJF frequency</span></a><a class="navitem k-figure" href="#card-block-freq" data-item="block-freq"><span class="dot"></span><span class="navitem-t">Tasman blocking frequency by austral summer</span></a><a class="navitem k-metric" href="#card-block-stat" data-item="block-stat"><span class="dot"></span><span class="navitem-t">Blocking summary statistics</span></a><div class="navsub">Regional composite</div><a class="navitem k-figure" href="#card-block-comp" data-item="block-comp"><span class="dot"></span><span class="navitem-t">Composite Z500 anomaly on blocked days</span></a><div class="navsub">Zonal-mean evolution</div><a class="navitem k-note" href="#card-note-6" data-item="note-6"><span class="dot"></span><span class="navitem-t">Zonal-mean evolution</span></a><a class="navitem k-figure" href="#card-zonal-hov" data-item="zonal-hov"><span class="dot"></span><span class="navitem-t">Zonal-mean Z500 anomaly (time-latitude)</span></a></div><a class="navsec" href="#sec-enso-diagnostics" data-sec="enso-diagnostics"><span class="navsec-t">ENSO diagnostics</span><span class="navsec-c">3</span></a><div class="navitems"><a class="navitem k-transform" href="#card-enso-idx" data-item="enso-idx"><span class="dot"></span><span class="navitem-t">Project anomalies onto the ENSO pattern</span></a><div class="navsub">Index construction</div><a class="navitem k-note" href="#card-note-7" data-item="note-7"><span class="dot"></span><span class="navitem-t">Index construction</span></a><a class="navitem k-figure" href="#card-nino34" data-item="nino34"><span class="dot"></span><span class="navitem-t">ENSO index from the leading SH anomaly mode</span></a><div class="navsub">Teleconnections</div><a class="navitem k-figure" href="#card-enso-comp" data-item="enso-comp"><span class="dot"></span><span class="navitem-t">Warm-phase teleconnection composite</span></a><a class="navitem k-figure" href="#card-enso-spec" data-item="enso-spec"><span class="dot"></span><span class="navitem-t">Power spectrum of the ENSO index</span></a></div><a class="navsec" href="#sec-interpretation" data-sec="interpretation"><span class="navsec-t">Interpretation</span><span class="navsec-c"></span></a><div class="navitems"><a class="navitem k-note" href="#card-note-8" data-item="note-8"><span class="dot"></span><span class="navitem-t">Interpretation</span></a><div class="navsub">Caveats</div><a class="navitem k-note" href="#card-note-9" data-item="note-9"><span class="dot"></span><span class="navitem-t">Caveats</span></a></div><div class="navkey"><span class="navkey-h">key</span><span class="nk k-note"><span class="dot"></span>note</span><span class="nk k-code"><span class="dot"></span>code</span><span class="nk k-transform"><span class="dot"></span>transform</span><span class="nk k-dataset"><span class="dot"></span>dataset</span><span class="nk k-metric"><span class="dot"></span>metric</span><span class="nk k-figure"><span class="dot"></span>figure</span></div></nav>
+    <nav class="nav" aria-label="Analysis sections"><a class="navsec" href="#sec-overview" data-sec="overview"><span class="navsec-t">Overview</span><span class="navsec-c"></span></a><div class="navitems"><a class="navitem k-note" href="#card-note" data-item="note"><span class="dot"></span><span class="navitem-t">Note</span></a></div><a class="navsec" href="#sec-dataset" data-sec="dataset"><span class="navsec-t">Dataset</span><span class="navsec-c"></span></a><div class="navitems"><a class="navitem k-note" href="#card-note-2" data-item="note-2"><span class="dot"></span><span class="navitem-t">Dataset</span></a><a class="navitem k-code" href="#card-imports-plotting-style" data-item="imports-plotting-style"><span class="dot"></span><span class="navitem-t">Imports &amp; plotting style</span></a><a class="navitem k-transform" href="#card-grid" data-item="grid"><span class="dot"></span><span class="navitem-t">Grid &amp; time axis</span></a><a class="navitem k-transform" href="#card-modes" data-item="modes"><span class="dot"></span><span class="navitem-t">Synthetic climatology &amp; variability modes</span></a><a class="navitem k-dataset ckmain-data" href="#card-z500" data-item="z500"><span class="dot"></span><span class="navitem-t">Daily Z500 field, Southern Hemisphere (synthetic)</span></a><a class="navitem k-metric ckmain-print" href="#card-coverage" data-item="coverage"><span class="dot"></span><span class="navitem-t">Temporal &amp; spatial coverage</span></a></div><a class="navsec" href="#sec-transforms" data-sec="transforms"><span class="navsec-t">Transforms</span><span class="navsec-c"></span></a><div class="navitems"><a class="navitem k-note" href="#card-note-3" data-item="note-3"><span class="dot"></span><span class="navitem-t">Transforms</span></a><a class="navitem k-transform" href="#card-clim" data-item="clim"><span class="dot"></span><span class="navitem-t">Day-of-year climatology</span></a><a class="navitem k-transform" href="#card-anom" data-item="anom"><span class="dot"></span><span class="navitem-t">Seasonal-cycle removal -&gt; daily anomalies</span></a></div><a class="navsec" href="#sec-blocking-diagnostics" data-sec="blocking-diagnostics"><span class="navsec-t">Blocking diagnostics</span><span class="navsec-c">4</span></a><div class="navitems"><a class="navitem k-note" href="#card-note-4" data-item="note-4"><span class="dot"></span><span class="navitem-t">Blocking diagnostics</span></a><div class="navsub">Climatology</div><a class="navitem k-figure" href="#card-clim-map" data-item="clim-map"><span class="dot"></span><span class="navitem-t">DJF mean Z500 and the climatological ridge</span></a><div class="navsub">The blocking index</div><a class="navitem k-note" href="#card-note-5" data-item="note-5"><span class="dot"></span><span class="navitem-t">The blocking index</span></a><div class="navsub">Blocking frequency</div><a class="navitem k-transform" href="#card-tasman" data-item="tasman"><span class="dot"></span><span class="navitem-t">Tasman sector box-mean series</span></a><a class="navitem k-transform" href="#card-blockidx" data-item="blockidx"><span class="dot"></span><span class="navitem-t">Blocking threshold &amp; DJF frequency</span></a><a class="navitem k-figure" href="#card-block-freq" data-item="block-freq"><span class="dot"></span><span class="navitem-t">Tasman blocking frequency by austral summer</span></a><a class="navitem k-metric ckmain-print" href="#card-block-stat" data-item="block-stat"><span class="dot"></span><span class="navitem-t">Blocking summary statistics</span></a><div class="navsub">Regional composite</div><a class="navitem k-figure" href="#card-block-comp" data-item="block-comp"><span class="dot"></span><span class="navitem-t">Composite Z500 anomaly on blocked days</span></a><div class="navsub">Zonal-mean evolution</div><a class="navitem k-note" href="#card-note-6" data-item="note-6"><span class="dot"></span><span class="navitem-t">Zonal-mean evolution</span></a><a class="navitem k-figure" href="#card-zonal-hov" data-item="zonal-hov"><span class="dot"></span><span class="navitem-t">Zonal-mean Z500 anomaly (time-latitude)</span></a></div><a class="navsec" href="#sec-enso-diagnostics" data-sec="enso-diagnostics"><span class="navsec-t">ENSO diagnostics</span><span class="navsec-c">3</span></a><div class="navitems"><a class="navitem k-transform" href="#card-enso-idx" data-item="enso-idx"><span class="dot"></span><span class="navitem-t">Project anomalies onto the ENSO pattern</span></a><div class="navsub">Index construction</div><a class="navitem k-note" href="#card-note-7" data-item="note-7"><span class="dot"></span><span class="navitem-t">Index construction</span></a><a class="navitem k-figure" href="#card-nino34" data-item="nino34"><span class="dot"></span><span class="navitem-t">ENSO index from the leading SH anomaly mode</span></a><div class="navsub">Teleconnections</div><a class="navitem k-figure" href="#card-enso-comp" data-item="enso-comp"><span class="dot"></span><span class="navitem-t">Warm-phase teleconnection composite</span></a><a class="navitem k-figure" href="#card-enso-spec" data-item="enso-spec"><span class="dot"></span><span class="navitem-t">Power spectrum of the ENSO index</span></a></div><a class="navsec" href="#sec-interpretation" data-sec="interpretation"><span class="navsec-t">Interpretation</span><span class="navsec-c"></span></a><div class="navitems"><a class="navitem k-note" href="#card-note-8" data-item="note-8"><span class="dot"></span><span class="navitem-t">Interpretation</span></a><div class="navsub">Caveats</div><a class="navitem k-note" href="#card-note-9" data-item="note-9"><span class="dot"></span><span class="navitem-t">Caveats</span></a></div><div class="navkey"><span class="navkey-h">key</span><span class="nk k-note"><span class="dot"></span>note</span><span class="nk k-code"><span class="dot"></span>code</span><span class="nk k-transform"><span class="dot"></span>transform</span><span class="nk ckmain-data"><span class="dot"></span>data</span><span class="nk ckmain-print"><span class="dot"></span>print</span><span class="nk k-figure"><span class="dot"></span>figure</span></div></nav>
     <div class="railgraph"><div class="railgraph-h"><span class="eyebrow">analysis graph</span><button class="rg-collapse" aria-expanded="true" title="Collapse graph">–</button></div><div class="railgraph-b"><svg viewBox="0 0 268 530" width="100%" height="530" class="provsvg" role="img" aria-label="Analysis provenance graph"><path class="provedge" d="M 134.0 41.0 C 134.0 58.0 134.0 58.0 134.0 75.0" data-from="grid" data-to="modes"/><path class="provedge" d="M 134.0 41.0 C 134.0 90.0 134.0 90.0 134.0 139.0" data-from="grid" data-to="z500"/><path class="provedge" d="M 134.0 105.0 C 134.0 122.0 134.0 122.0 134.0 139.0" data-from="modes" data-to="z500"/><path class="provedge" d="M 134.0 169.0 C 134.0 186.0 55.3 186.0 55.3 203.0" data-from="z500" data-to="coverage"/><path class="provedge" d="M 134.0 169.0 C 134.0 186.0 134.0 186.0 134.0 203.0" data-from="z500" data-to="clim"/><path class="provedge" d="M 134.0 233.0 C 134.0 250.0 134.0 250.0 134.0 267.0" data-from="clim" data-to="anom"/><path class="provedge" d="M 134.0 169.0 C 134.0 186.0 212.7 186.0 212.7 203.0" data-from="z500" data-to="clim_map"/><path class="provedge" d="M 134.0 297.0 C 134.0 314.0 55.3 314.0 55.3 331.0" data-from="anom" data-to="tasman"/><path class="provedge" d="M 55.3 361.0 C 55.3 378.0 45.5 378.0 45.5 395.0" data-from="tasman" data-to="blockidx"/><path class="provedge" d="M 45.5 425.0 C 45.5 442.0 55.3 442.0 55.3 459.0" data-from="blockidx" data-to="block_freq"/><path class="provedge" d="M 45.5 425.0 C 45.5 442.0 134.0 442.0 134.0 459.0" data-from="blockidx" data-to="block_stat"/><path class="provedge" d="M 134.0 297.0 C 134.0 378.0 212.7 378.0 212.7 459.0" data-from="anom" data-to="block_comp"/><path class="provedge" d="M 45.5 425.0 C 45.5 442.0 212.7 442.0 212.7 459.0" data-from="blockidx" data-to="block_comp"/><path class="provedge" d="M 134.0 297.0 C 134.0 314.0 134.0 314.0 134.0 331.0" data-from="anom" data-to="zonal_hov"/><path class="provedge" d="M 134.0 297.0 C 134.0 314.0 212.7 314.0 212.7 331.0" data-from="anom" data-to="enso_idx"/><path class="provedge" d="M 134.0 105.0 C 134.0 218.0 212.7 218.0 212.7 331.0" data-from="modes" data-to="enso_idx"/><path class="provedge" d="M 212.7 361.0 C 212.7 378.0 104.5 378.0 104.5 395.0" data-from="enso_idx" data-to="nino34"/><path class="provedge" d="M 134.0 297.0 C 134.0 346.0 163.5 346.0 163.5 395.0" data-from="anom" data-to="enso_comp"/><path class="provedge" d="M 212.7 361.0 C 212.7 378.0 163.5 378.0 163.5 395.0" data-from="enso_idx" data-to="enso_comp"/><path class="provedge" d="M 212.7 361.0 C 212.7 378.0 222.5 378.0 222.5 395.0" data-from="enso_idx" data-to="enso_spec"/><g class="provnode" data-node="grid" data-target="grid" tabindex="0" role="button" aria-label="Go to Grid &amp; time axis"><rect x="105.0" y="11.0" rx="5" width="58.0" height="30" fill="#3b5566"/><text x="134.0" y="30.0" text-anchor="middle">grid</text></g><g class="provnode" data-node="modes" data-target="modes" tabindex="0" role="button" aria-label="Go to Synthetic climatology &amp; variability modes"><rect x="105.0" y="75.0" rx="5" width="58.0" height="30" fill="#3b5566"/><text x="134.0" y="94.0" text-anchor="middle">modes</text></g><g class="provnode" data-node="z500" data-target="z500" tabindex="0" role="button" aria-label="Go to Daily Z500 field, Southern Hemisphere (synthetic)"><rect x="105.0" y="139.0" rx="5" width="58.0" height="30" fill="#2f6f9e"/><text x="134.0" y="158.0" text-anchor="middle">z500</text></g><g class="provnode" data-node="coverage" data-target="coverage" tabindex="0" role="button" aria-label="Go to Temporal &amp; spatial coverage"><rect x="18.5" y="203.0" rx="5" width="73.6" height="30" fill="#2c8c7d"/><text x="55.3" y="222.0" text-anchor="middle">coverage</text></g><g class="provnode" data-node="clim" data-target="clim" tabindex="0" role="button" aria-label="Go to Day-of-year climatology"><rect x="105.0" y="203.0" rx="5" width="58.0" height="30" fill="#3b5566"/><text x="134.0" y="222.0" text-anchor="middle">clim</text></g><g class="provnode" data-node="anom" data-target="anom" tabindex="0" role="button" aria-label="Go to Seasonal-cycle removal -&gt; daily anomalies"><rect x="105.0" y="267.0" rx="5" width="58.0" height="30" fill="#3b5566"/><text x="134.0" y="286.0" text-anchor="middle">anom</text></g><g class="provnode" data-node="clim_map" data-target="clim-map" tabindex="0" role="button" aria-label="Go to DJF mean Z500 and the climatological ridge"><rect x="175.9" y="203.0" rx="5" width="73.6" height="30" fill="#2f9bb0"/><text x="212.7" y="222.0" text-anchor="middle">clim_map</text></g><g class="provnode" data-node="tasman" data-target="tasman" tabindex="0" role="button" aria-label="Go to Tasman sector box-mean series"><rect x="25.7" y="331.0" rx="5" width="59.2" height="30" fill="#3b5566"/><text x="55.3" y="350.0" text-anchor="middle">tasman</text></g><g class="provnode" data-node="blockidx" data-target="blockidx" tabindex="0" role="button" aria-label="Go to Blocking threshold &amp; DJF frequency"><rect x="8.7" y="395.0" rx="5" width="73.6" height="30" fill="#3b5566"/><text x="45.5" y="414.0" text-anchor="middle">blockidx</text></g><g class="provnode" data-node="block_freq" data-target="block-freq" tabindex="0" role="button" aria-label="Go to Tasman blocking frequency by austral summer"><rect x="11.3" y="459.0" rx="5" width="88.0" height="30" fill="#2f9bb0"/><text x="55.3" y="478.0" text-anchor="middle">block_freq</text></g><g class="provnode" data-node="block_stat" data-target="block-stat" tabindex="0" role="button" aria-label="Go to Blocking summary statistics"><rect x="90.0" y="459.0" rx="5" width="88.0" height="30" fill="#2c8c7d"/><text x="134.0" y="478.0" text-anchor="middle">block_stat</text></g><g class="provnode" data-node="block_comp" data-target="block-comp" tabindex="0" role="button" aria-label="Go to Composite Z500 anomaly on blocked days"><rect x="168.7" y="459.0" rx="5" width="88.0" height="30" fill="#2f9bb0"/><text x="212.7" y="478.0" text-anchor="middle">block_comp</text></g><g class="provnode" data-node="zonal_hov" data-target="zonal-hov" tabindex="0" role="button" aria-label="Go to Zonal-mean Z500 anomaly (time-latitude)"><rect x="93.6" y="331.0" rx="5" width="80.8" height="30" fill="#2f9bb0"/><text x="134.0" y="350.0" text-anchor="middle">zonal_hov</text></g><g class="provnode" data-node="enso_idx" data-target="enso-idx" tabindex="0" role="button" aria-label="Go to Project anomalies onto the ENSO pattern"><rect x="175.9" y="331.0" rx="5" width="73.6" height="30" fill="#3b5566"/><text x="212.7" y="350.0" text-anchor="middle">enso_idx</text></g><g class="provnode" data-node="nino34" data-target="nino34" tabindex="0" role="button" aria-label="Go to ENSO index from the leading SH anomaly mode"><rect x="74.9" y="395.0" rx="5" width="59.2" height="30" fill="#2f9bb0"/><text x="104.5" y="414.0" text-anchor="middle">nino34</text></g><g class="provnode" data-node="enso_comp" data-target="enso-comp" tabindex="0" role="button" aria-label="Go to Warm-phase teleconnection composite"><rect x="123.1" y="395.0" rx="5" width="80.8" height="30" fill="#2f9bb0"/><text x="163.5" y="414.0" text-anchor="middle">enso_comp</text></g><g class="provnode" data-node="enso_spec" data-target="enso-spec" tabindex="0" role="button" aria-label="Go to Power spectrum of the ENSO index"><rect x="182.1" y="395.0" rx="5" width="80.8" height="30" fill="#2f9bb0"/><text x="222.5" y="414.0" text-anchor="middle">enso_spec</text></g></svg></div></div>
   </aside>
   <main class="stage">
@@ -1738,7 +1854,7 @@ enso_pattern <span class="op">=</span> <span class="op">(</span>np<span class="o
 
 <span class="co"># episodic blocking south of Australia (~50S, 150E)</span>
 block_days <span class="op">=</span> rng<span class="op">.</span>random<span class="op">(</span>time<span class="op">.</span>size<span class="op">)</span> <span class="op">&lt;</span> <span class="nu">0.09</span>
-blob <span class="op">=</span> np<span class="op">.</span>exp<span class="op">(</span><span class="op">-</span><span class="op">(</span><span class="op">(</span><span class="op">(</span>lat<span class="op">[</span><span class="op">:</span><span class="op">,</span> <span class="kw">None</span><span class="op">]</span><span class="op">+</span><span class="nu">50</span><span class="op">)</span><span class="op">/</span><span class="nu">9</span><span class="op">)</span><span class="op">**</span><span class="nu">2</span><span class="op">)</span> <span class="op">-</span> <span class="op">(</span><span class="op">(</span><span class="op">(</span>lon<span class="op">[</span><span class="kw">None</span><span class="op">,</span> <span class="op">:</span><span class="op">]</span><span class="op">-</span><span class="nu">150</span><span class="op">)</span><span class="op">/</span><span class="nu">16</span><span class="op">)</span><span class="op">**</span><span class="nu">2</span><span class="op">)</span><span class="op">)</span> <span class="op">*</span> <span class="nu">130</span></code></pre></div></div></div></div></article><article class="card k-dataset" id="card-z500" data-kind="dataset" data-node="z500" data-note="0" data-anchor="z500" tabindex="-1"><header class="cardhead"><span class="badge">dataset</span><h3 class="cardtitle">Daily Z500 field, Southern Hemisphere (synthetic)</h3><span class="nodeid">z500</span></header><div class="cardbody"><div class="xr-wrap"><div><svg style="position: absolute; width: 0; height: 0; overflow: hidden">
+blob <span class="op">=</span> np<span class="op">.</span>exp<span class="op">(</span><span class="op">-</span><span class="op">(</span><span class="op">(</span><span class="op">(</span>lat<span class="op">[</span><span class="op">:</span><span class="op">,</span> <span class="kw">None</span><span class="op">]</span><span class="op">+</span><span class="nu">50</span><span class="op">)</span><span class="op">/</span><span class="nu">9</span><span class="op">)</span><span class="op">**</span><span class="nu">2</span><span class="op">)</span> <span class="op">-</span> <span class="op">(</span><span class="op">(</span><span class="op">(</span>lon<span class="op">[</span><span class="kw">None</span><span class="op">,</span> <span class="op">:</span><span class="op">]</span><span class="op">-</span><span class="nu">150</span><span class="op">)</span><span class="op">/</span><span class="nu">16</span><span class="op">)</span><span class="op">**</span><span class="nu">2</span><span class="op">)</span><span class="op">)</span> <span class="op">*</span> <span class="nu">130</span></code></pre></div></div></div></div></article><article class="card k-dataset ckmain-data ck-data" id="card-z500" data-kind="dataset" data-node="z500" data-ck="data" data-note="0" data-anchor="z500" tabindex="-1"><header class="cardhead"><span class="badge">data</span><h3 class="cardtitle">Daily Z500 field, Southern Hemisphere (synthetic)</h3><span class="nodeid">z500</span></header><div class="cardbody"><div class="xr-wrap"><div><svg style="position: absolute; width: 0; height: 0; overflow: hidden">
 <defs>
 <symbol id="icon-database" viewBox="0 0 32 32">
 <path d="M16 0c-8.837 0-16 2.239-16 5v4c0 2.761 7.163 5 16 5s16-2.239 16-5v-4c0-2.761-7.163-5-16-5z"></path>
@@ -2362,7 +2478,7 @@ ds <span class="op">=</span> xr<span class="op">.</span>Dataset<span class="op">
     attrs<span class="op">=</span><span class="op">{</span><span class="st">&#x27;title&#x27;</span><span class="op">:</span> <span class="st">&#x27;Synthetic SH Z500&#x27;</span><span class="op">,</span> <span class="st">&#x27;units&#x27;</span><span class="op">:</span> <span class="st">&#x27;m&#x27;</span><span class="op">,</span> <span class="st">&#x27;source&#x27;</span><span class="op">:</span> <span class="st">&#x27;demo&#x27;</span><span class="op">}</span><span class="op">,</span>
 <span class="op">)</span>
 ds<span class="op">.</span>z500<span class="op">.</span>attrs<span class="op">.</span><span class="bn">update</span><span class="op">(</span>long_name<span class="op">=</span><span class="st">&#x27;500 hPa geopotential height&#x27;</span><span class="op">,</span> units<span class="op">=</span><span class="st">&#x27;m&#x27;</span><span class="op">)</span>
-ds</code></pre></div></div></div></div></article><article class="card k-metric" id="card-coverage" data-kind="metric" data-node="coverage" data-note="0" data-anchor="coverage" tabindex="-1"><header class="cardhead"><span class="badge">metric</span><h3 class="cardtitle">Temporal &amp; spatial coverage</h3><span class="nodeid">coverage</span></header><div class="cardbody"><pre class="stream">period      : 2008-01-01 -&gt; 2022-12-31 (5,479 days)
+ds</code></pre></div></div></div></div></article><article class="card k-metric ckmain-print ck-print" id="card-coverage" data-kind="metric" data-node="coverage" data-ck="print" data-note="0" data-anchor="coverage" tabindex="-1"><header class="cardhead"><span class="badge">print</span><h3 class="cardtitle">Temporal &amp; spatial coverage</h3><span class="nodeid">coverage</span></header><div class="cardbody"><pre class="stream">period      : 2008-01-01 -&gt; 2022-12-31 (5,479 days)
 grid        : 25 lat x 144 lon  (2.5 deg)
 domain      : -80 to -20 deg lat, full longitude
 memory (z)  : 79 MB
@@ -3037,7 +3153,7 @@ ax<span class="op">.</span>axhline<span class="op">(</span><span class="op">(</s
            label<span class="op">=</span><span class="st">&#x27;period mean&#x27;</span><span class="op">)</span>
 ax<span class="op">.</span>set_xlabel<span class="op">(</span><span class="st">&#x27;year&#x27;</span><span class="op">)</span><span class="op">;</span> ax<span class="op">.</span>set_ylabel<span class="op">(</span><span class="st">&#x27;blocked DJF days (%)&#x27;</span><span class="op">)</span>
 ax<span class="op">.</span>set_title<span class="op">(</span><span class="st">&#x27;Tasman blocking frequency&#x27;</span><span class="op">)</span><span class="op">;</span> ax<span class="op">.</span>legend<span class="op">(</span>frameon<span class="op">=</span><span class="kw">False</span><span class="op">)</span>
-fig<span class="op">.</span>tight_layout<span class="op">(</span><span class="op">)</span><span class="op">;</span> plt<span class="op">.</span>show<span class="op">(</span><span class="op">)</span></code></pre></div></div></div></div></article><article class="card k-metric" id="card-block-stat" data-kind="metric" data-node="block_stat" data-note="0" data-anchor="block_stat" tabindex="-1"><header class="cardhead"><span class="badge">metric</span><h3 class="cardtitle">Blocking summary statistics</h3><span class="nodeid">block_stat</span></header><div class="cardbody"><pre class="stream">mean DJF blocking frequency :   9.3 %
+fig<span class="op">.</span>tight_layout<span class="op">(</span><span class="op">)</span><span class="op">;</span> plt<span class="op">.</span>show<span class="op">(</span><span class="op">)</span></code></pre></div></div></div></div></article><article class="card k-metric ckmain-print ck-print" id="card-block-stat" data-kind="metric" data-node="block_stat" data-ck="print" data-note="0" data-anchor="block_stat" tabindex="-1"><header class="cardhead"><span class="badge">print</span><h3 class="cardtitle">Blocking summary statistics</h3><span class="nodeid">block_stat</span></header><div class="cardbody"><pre class="stream">mean DJF blocking frequency :   9.3 %
 most blocked summer         : 2013 (14%)
 least blocked summer        : 2018 (2%)
 </pre><pre class="stream">/usr/local/lib/python3.12/dist-packages/xarray/core/dataarray.py:6439: FutureWarning: Behaviour of argmin/argmax with neither dim nor axis argument will change to return a dict of indices of each dimension. To get a single, flat index, please use np.argmin(da.data) or np.argmax(da.data) instead of da.argmin() or da.argmax().
@@ -4608,7 +4724,7 @@ ax<span class="op">.</span>set_ylabel<span class="op">(</span><span class="st">&
 fig<span class="op">.</span>tight_layout<span class="op">(</span><span class="op">)</span><span class="op">;</span> plt<span class="op">.</span>show<span class="op">(</span><span class="op">)</span></code></pre><div class="rawout"><div class="figframe"><img loading="lazy" alt="figure output" src="data:image/png;base64,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"></div></div></div><div class="rawcell md"><span class="rawtag">markdown</span><div class="rawmd"><h3>Interpretation</h3><p>The diagnostics hang together. The DJF climatology sets up a wave-3 ridge near the Tasman sector; blocked days compositie into a localised high in exactly that region; and the years with the most blocking line up with the warm phase of the ENSO index. The teleconnection composite recovers the same spatial mode the index was built to track, so the index and the blocking metric are measuring consistent physics rather than noise.</p></div></div><div class="rawcell md"><span class="rawtag">markdown</span><div class="rawmd"><h4>Caveats</h4><p>This is synthetic data with an imposed relationship, so the ENSO–blocking link here is true by construction. On reanalysis the same pipeline would need significance testing on the composites and a sensitivity check on the +1 sigma blocking threshold before any of this could be read as a real teleconnection.</p></div></div>
     </div>
   </main>
-  <script type="application/json" class="nb-data">{"title": "Southern Hemisphere blocking & ENSO diagnostics", "meta": "7 figures · 1 datasets · 6 sections", "stem": "example_climate_analysis", "sections": [{"id": "overview", "title": "Overview"}, {"id": "dataset", "title": "Dataset"}, {"id": "transforms", "title": "Transforms"}, {"id": "blocking-diagnostics", "title": "Blocking diagnostics"}, {"id": "enso-diagnostics", "title": "ENSO diagnostics"}, {"id": "interpretation", "title": "Interpretation"}], "items": [{"anchor": "cell:83402c05", "card": "note", "title": "Note", "kind": "note", "section": "overview", "hasCode": false, "chain": []}, {"anchor": "cell:9d754ae5", "card": "note-2", "title": "Dataset", "kind": "note", "section": "dataset", "hasCode": false, "chain": []}, {"anchor": "cell:a10de23c", "card": "imports-plotting-style", "title": "Imports & plotting style", "kind": "code", "section": "dataset", "hasCode": true, "chain": []}, {"anchor": "grid", "card": "grid", "title": "Grid & time axis", "kind": "transform", "section": "dataset", "hasCode": true, "chain": ["cell:a10de23c"]}, {"anchor": "modes", "card": "modes", "title": "Synthetic climatology & variability modes", "kind": "transform", "section": "dataset", "hasCode": true, "chain": ["cell:a10de23c", "grid"]}, {"anchor": "z500", "card": "z500", "title": "Daily Z500 field, Southern Hemisphere (synthetic)", "kind": "dataset", "section": "dataset", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes"]}, {"anchor": "coverage", "card": "coverage", "title": "Temporal & spatial coverage", "kind": "metric", "section": "dataset", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500"]}, {"anchor": "cell:4f6551c3", "card": "note-3", "title": "Transforms", "kind": "note", "section": "transforms", "hasCode": false, "chain": []}, {"anchor": "clim", "card": "clim", "title": "Day-of-year climatology", "kind": "transform", "section": "transforms", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500"]}, {"anchor": "anom", "card": "anom", "title": "Seasonal-cycle removal -> daily anomalies", "kind": "transform", "section": "transforms", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim"]}, {"anchor": "cell:06116e80", "card": "note-4", "title": "Blocking diagnostics", "kind": "note", "section": "blocking-diagnostics", "hasCode": false, "chain": []}, {"anchor": "clim_map", "card": "clim-map", "title": "DJF mean Z500 and the climatological ridge", "kind": "figure", "section": "blocking-diagnostics", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500"]}, {"anchor": "cell:mdblock1", "card": "note-5", "title": "The blocking index", "kind": "note", "section": "blocking-diagnostics", "hasCode": false, "chain": []}, {"anchor": "tasman", "card": "tasman", "title": "Tasman sector box-mean series", "kind": "transform", "section": "blocking-diagnostics", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim", "anom"]}, {"anchor": "blockidx", "card": "blockidx", "title": "Blocking threshold & DJF frequency", "kind": "transform", "section": "blocking-diagnostics", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim", "anom", "tasman"]}, {"anchor": "block_freq", "card": "block-freq", "title": "Tasman blocking frequency by austral summer", "kind": "figure", "section": "blocking-diagnostics", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim", "anom", "tasman", "blockidx"]}, {"anchor": "block_stat", "card": "block-stat", "title": "Blocking summary statistics", "kind": "metric", "section": "blocking-diagnostics", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim", "anom", "tasman", "blockidx"]}, {"anchor": "block_comp", "card": "block-comp", "title": "Composite Z500 anomaly on blocked days", "kind": "figure", "section": "blocking-diagnostics", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim", "anom", "tasman", "blockidx"]}, {"anchor": "cell:f99e6fcb", "card": "note-6", "title": "Zonal-mean evolution", "kind": "note", "section": "blocking-diagnostics", "hasCode": false, "chain": []}, {"anchor": "zonal_hov", "card": "zonal-hov", "title": "Zonal-mean Z500 anomaly (time-latitude)", "kind": "figure", "section": "blocking-diagnostics", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim", "anom"]}, {"anchor": "enso_idx", "card": "enso-idx", "title": "Project anomalies onto the ENSO pattern", "kind": "transform", "section": "enso-diagnostics", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim", "anom"]}, {"anchor": "cell:mdenso01", "card": "note-7", "title": "Index construction", "kind": "note", "section": "enso-diagnostics", "hasCode": false, "chain": []}, {"anchor": "nino34", "card": "nino34", "title": "ENSO index from the leading SH anomaly mode", "kind": "figure", "section": "enso-diagnostics", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim", "anom", "enso_idx"]}, {"anchor": "enso_comp", "card": "enso-comp", "title": "Warm-phase teleconnection composite", "kind": "figure", "section": "enso-diagnostics", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim", "anom", "enso_idx"]}, {"anchor": "enso_spec", "card": "enso-spec", "title": "Power spectrum of the ENSO index", "kind": "figure", "section": "enso-diagnostics", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim", "anom", "enso_idx"]}, {"anchor": "cell:e10d8ce5", "card": "note-8", "title": "Interpretation", "kind": "note", "section": "interpretation", "hasCode": false, "chain": []}, {"anchor": "cell:ef1b0c46", "card": "note-9", "title": "Caveats", "kind": "note", "section": "interpretation", "hasCode": false, "chain": []}], "presentations": []}</script>
+  <script type="application/json" class="nb-data">{"title": "Southern Hemisphere blocking & ENSO diagnostics", "meta": "7 figures · 1 datasets · 6 sections", "stem": "example_climate_analysis", "sections": [{"id": "overview", "title": "Overview"}, {"id": "dataset", "title": "Dataset"}, {"id": "transforms", "title": "Transforms"}, {"id": "blocking-diagnostics", "title": "Blocking diagnostics"}, {"id": "enso-diagnostics", "title": "ENSO diagnostics"}, {"id": "interpretation", "title": "Interpretation"}], "items": [{"anchor": "cell:83402c05", "card": "note", "title": "Note", "kind": "note", "codeKind": "code", "codeKinds": ["code"], "section": "overview", "sectitle": "Overview", "subsection": "", "hasCode": false, "chain": []}, {"anchor": "cell:9d754ae5", "card": "note-2", "title": "Dataset", "kind": "note", "codeKind": "code", "codeKinds": ["code"], "section": "dataset", "sectitle": "Dataset", "subsection": "", "hasCode": false, "chain": []}, {"anchor": "cell:a10de23c", "card": "imports-plotting-style", "title": "Imports & plotting style", "kind": "code", "codeKind": "code", "codeKinds": ["code"], "section": "dataset", "sectitle": "Dataset", "subsection": "", "hasCode": true, "chain": []}, {"anchor": "grid", "card": "grid", "title": "Grid & time axis", "kind": "transform", "codeKind": "code", "codeKinds": ["code"], "section": "dataset", "sectitle": "Dataset", "subsection": "", "hasCode": true, "chain": ["cell:a10de23c"]}, {"anchor": "modes", "card": "modes", "title": "Synthetic climatology & variability modes", "kind": "transform", "codeKind": "code", "codeKinds": ["code"], "section": "dataset", "sectitle": "Dataset", "subsection": "", "hasCode": true, "chain": ["cell:a10de23c", "grid"]}, {"anchor": "z500", "card": "z500", "title": "Daily Z500 field, Southern Hemisphere (synthetic)", "kind": "dataset", "codeKind": "data", "codeKinds": ["data"], "section": "dataset", "sectitle": "Dataset", "subsection": "", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes"]}, {"anchor": "coverage", "card": "coverage", "title": "Temporal & spatial coverage", "kind": "metric", "codeKind": "print", "codeKinds": ["print"], "section": "dataset", "sectitle": "Dataset", "subsection": "", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500"]}, {"anchor": "cell:4f6551c3", "card": "note-3", "title": "Transforms", "kind": "note", "codeKind": "code", "codeKinds": ["code"], "section": "transforms", "sectitle": "Transforms", "subsection": "", "hasCode": false, "chain": []}, {"anchor": "clim", "card": "clim", "title": "Day-of-year climatology", "kind": "transform", "codeKind": "code", "codeKinds": ["code"], "section": "transforms", "sectitle": "Transforms", "subsection": "", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500"]}, {"anchor": "anom", "card": "anom", "title": "Seasonal-cycle removal -> daily anomalies", "kind": "transform", "codeKind": "code", "codeKinds": ["code"], "section": "transforms", "sectitle": "Transforms", "subsection": "", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim"]}, {"anchor": "cell:06116e80", "card": "note-4", "title": "Blocking diagnostics", "kind": "note", "codeKind": "code", "codeKinds": ["code"], "section": "blocking-diagnostics", "sectitle": "Blocking diagnostics", "subsection": "", "hasCode": false, "chain": []}, {"anchor": "clim_map", "card": "clim-map", "title": "DJF mean Z500 and the climatological ridge", "kind": "figure", "codeKind": "plotting", "codeKinds": ["plotting"], "section": "blocking-diagnostics", "sectitle": "Blocking diagnostics", "subsection": "Climatology", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500"]}, {"anchor": "cell:mdblock1", "card": "note-5", "title": "The blocking index", "kind": "note", "codeKind": "code", "codeKinds": ["code"], "section": "blocking-diagnostics", "sectitle": "Blocking diagnostics", "subsection": "The blocking index", "hasCode": false, "chain": []}, {"anchor": "tasman", "card": "tasman", "title": "Tasman sector box-mean series", "kind": "transform", "codeKind": "code", "codeKinds": ["code"], "section": "blocking-diagnostics", "sectitle": "Blocking diagnostics", "subsection": "Blocking frequency", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim", "anom"]}, {"anchor": "blockidx", "card": "blockidx", "title": "Blocking threshold & DJF frequency", "kind": "transform", "codeKind": "code", "codeKinds": ["code"], "section": "blocking-diagnostics", "sectitle": "Blocking diagnostics", "subsection": "Blocking frequency", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim", "anom", "tasman"]}, {"anchor": "block_freq", "card": "block-freq", "title": "Tasman blocking frequency by austral summer", "kind": "figure", "codeKind": "plotting", "codeKinds": ["plotting"], "section": "blocking-diagnostics", "sectitle": "Blocking diagnostics", "subsection": "Blocking frequency", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim", "anom", "tasman", "blockidx"]}, {"anchor": "block_stat", "card": "block-stat", "title": "Blocking summary statistics", "kind": "metric", "codeKind": "print", "codeKinds": ["print"], "section": "blocking-diagnostics", "sectitle": "Blocking diagnostics", "subsection": "Blocking frequency", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim", "anom", "tasman", "blockidx"]}, {"anchor": "block_comp", "card": "block-comp", "title": "Composite Z500 anomaly on blocked days", "kind": "figure", "codeKind": "plotting", "codeKinds": ["plotting"], "section": "blocking-diagnostics", "sectitle": "Blocking diagnostics", "subsection": "Regional composite", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim", "anom", "tasman", "blockidx"]}, {"anchor": "cell:f99e6fcb", "card": "note-6", "title": "Zonal-mean evolution", "kind": "note", "codeKind": "code", "codeKinds": ["code"], "section": "blocking-diagnostics", "sectitle": "Blocking diagnostics", "subsection": "Zonal-mean evolution", "hasCode": false, "chain": []}, {"anchor": "zonal_hov", "card": "zonal-hov", "title": "Zonal-mean Z500 anomaly (time-latitude)", "kind": "figure", "codeKind": "plotting", "codeKinds": ["plotting"], "section": "blocking-diagnostics", "sectitle": "Blocking diagnostics", "subsection": "Zonal-mean evolution", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim", "anom"]}, {"anchor": "enso_idx", "card": "enso-idx", "title": "Project anomalies onto the ENSO pattern", "kind": "transform", "codeKind": "code", "codeKinds": ["code"], "section": "enso-diagnostics", "sectitle": "ENSO diagnostics", "subsection": "", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim", "anom"]}, {"anchor": "cell:mdenso01", "card": "note-7", "title": "Index construction", "kind": "note", "codeKind": "code", "codeKinds": ["code"], "section": "enso-diagnostics", "sectitle": "ENSO diagnostics", "subsection": "Index construction", "hasCode": false, "chain": []}, {"anchor": "nino34", "card": "nino34", "title": "ENSO index from the leading SH anomaly mode", "kind": "figure", "codeKind": "plotting", "codeKinds": ["plotting"], "section": "enso-diagnostics", "sectitle": "ENSO diagnostics", "subsection": "Index construction", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim", "anom", "enso_idx"]}, {"anchor": "enso_comp", "card": "enso-comp", "title": "Warm-phase teleconnection composite", "kind": "figure", "codeKind": "plotting", "codeKinds": ["plotting"], "section": "enso-diagnostics", "sectitle": "ENSO diagnostics", "subsection": "Teleconnections", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim", "anom", "enso_idx"]}, {"anchor": "enso_spec", "card": "enso-spec", "title": "Power spectrum of the ENSO index", "kind": "figure", "codeKind": "plotting", "codeKinds": ["plotting"], "section": "enso-diagnostics", "sectitle": "ENSO diagnostics", "subsection": "Teleconnections", "hasCode": true, "chain": ["cell:a10de23c", "grid", "modes", "z500", "clim", "anom", "enso_idx"]}, {"anchor": "cell:e10d8ce5", "card": "note-8", "title": "Interpretation", "kind": "note", "codeKind": "code", "codeKinds": ["code"], "section": "interpretation", "sectitle": "Interpretation", "subsection": "", "hasCode": false, "chain": []}, {"anchor": "cell:ef1b0c46", "card": "note-9", "title": "Caveats", "kind": "note", "codeKind": "code", "codeKinds": ["code"], "section": "interpretation", "sectitle": "Interpretation", "subsection": "Caveats", "hasCode": false, "chain": []}], "presentations": []}</script>
 </div>
 
 </div>
@@ -4777,6 +4893,7 @@ or just download <code>semantic_render.py</code> and run
   </div>
 </div>
 <div class="drophint" id="drophint" hidden>Drop .ipynb files to open</div>
+<div class="ckfilter-menu" id="ck-filter-menu" hidden></div>
 <input type="file" id="fileinput" accept=".ipynb" multiple hidden>
 <input type="file" id="deckfile" accept=".json" hidden>
 
@@ -4854,6 +4971,7 @@ or just download <code>semantic_render.py</code> and run
         <button class="dbtn" id="dc-edit"
           title="Open this slide full-screen; add text, arrows and boxes">
           &#9998; Edit slide</button>
+        <div class="dc-nbs" id="dc-nbs" hidden></div>
       </div>
       <div class="dc-block dc-film">
         <div class="film-list" id="film-list"></div>
@@ -5081,6 +5199,9 @@ or just download <code>semantic_render.py</code> and run
 
   /* ---- global show/hide filters (top bar; apply to every tab) ---- */
   var vis={figs:true,markup:true,code:true};
+  var ckHidden={};   /* advanced: code subtypes the user has hidden */
+  var CK_TYPES=['imports','function','data','settings',
+    'plotting','print','constant'];
   var TYPES=[['figs','figures'],['markup','markup'],['code','code']];
   function renderTypeButtons(){
     TYPES.forEach(function(p){
@@ -5095,11 +5216,65 @@ or just download <code>semantic_render.py</code> and run
       var kind=c.dataset.kind,note=c.dataset.note==='1';
       var show=note?vis.markup
         :(kind==='figure'||kind==='diagnostic')?vis.figs:vis.code;
+      /* advanced: hide a code cell whose primary type is filtered out */
+      if(show&&!note&&kind!=='figure'&&kind!=='diagnostic'&&c.dataset.ck){
+        if(ckHidden[c.dataset.ck.split(' ')[0]]) show=false;
+      }
       c.classList.toggle('is-stub',!show);
       if(show) c.classList.remove('stub-open');
     });
     renderTypeButtons();
+    var fb=$('#ck-filter-btn');
+    if(fb) fb.classList.toggle('on',Object.keys(ckHidden).length>0);
   }
+  /* advanced filter menu: hide specific code subtypes */
+  function presentCkTypes(){
+    var set={};
+    $$('.nbshell .card[data-ck]').forEach(function(c){
+      c.dataset.ck.split(' ').forEach(function(t){set[t]=1;});});
+    return CK_TYPES.filter(function(t){return set[t];});
+  }
+  function renderCkMenu(){
+    var m=$('#ck-filter-menu'); if(!m) return;
+    m.innerHTML='';
+    var types=presentCkTypes();
+    if(!types.length){
+      m.innerHTML='<div class="ckf-empty">No typed code cells yet</div>';
+      return;
+    }
+    var h=document.createElement('div');h.className='ckf-h';
+    h.textContent='show code types';m.appendChild(h);
+    types.forEach(function(t){
+      var row=document.createElement('label');row.className='ckf-row';
+      var cb=document.createElement('input');cb.type='checkbox';
+      cb.checked=!ckHidden[t];
+      cb.addEventListener('change',function(){
+        if(cb.checked) delete ckHidden[t]; else ckHidden[t]=1;
+        applyFilters();
+      });
+      var sw=document.createElement('span');
+      sw.className='ckf-dot ckmain-'+t;
+      var tx=document.createElement('span');tx.textContent=t;
+      row.appendChild(cb);row.appendChild(sw);row.appendChild(tx);
+      m.appendChild(row);
+    });
+  }
+  var ckBtn=$('#ck-filter-btn'),ckMenu=$('#ck-filter-menu');
+  if(ckBtn) ckBtn.addEventListener('click',function(e){
+    e.stopPropagation();
+    if(!ckMenu) return;
+    if(ckMenu.hidden){
+      renderCkMenu();ckMenu.hidden=false;
+      var r=ckBtn.getBoundingClientRect();
+      ckMenu.style.top=(r.bottom+6)+'px';
+      ckMenu.style.left=Math.max(6,
+        Math.min(r.left,window.innerWidth-190))+'px';
+    } else ckMenu.hidden=true;
+  });
+  document.addEventListener('click',function(e){
+    if(ckMenu&&!ckMenu.hidden&&!ckMenu.contains(e.target)
+       &&e.target!==ckBtn) ckMenu.hidden=true;
+  });
   /* "Show code" means ALL code: code cards AND the blocks folded under
      every figure / dataset card */
   var codeAllOpen=null;   /* null until the user toggles */
@@ -6371,7 +6546,11 @@ or just download <code>semantic_render.py</code> and run
     if(multi){n.style.background=g.color+'26';n.style.color=g.color;}
     h.appendChild(n);
     var bd=document.createElement('span');
-    bd.className='chain-badge';bd.textContent=st.kind;
+    var cks=st.codeKinds||(st.codeKind?[st.codeKind]:['code']);
+    var codey=st.kind!=='figure'&&st.kind!=='diagnostic'
+      &&!(cks.length===1&&cks[0]==='code');
+    bd.className='chain-badge '+(codey?('ckmain-'+cks[0]):'');
+    bd.textContent=codey?cks.slice(0,3).join(' · '):st.kind;
     h.appendChild(bd);
     var bt=document.createElement('span');bt.className='vo-step-t';
     bt.textContent=st.title;h.appendChild(bt);
@@ -6475,7 +6654,25 @@ or just download <code>semantic_render.py</code> and run
       var hs=document.createElement('span');
       hs.textContent=g.it.title;h.appendChild(hs);
       col.appendChild(h);
+      /* partition the steps under their notebook section (## heading)
+         and subsection (### heading) — code grouped like the notebook */
+      var lastSec=null,lastSub=null;
       vis.forEach(function(st,k){
+        var sec=st.sectitle||'',sub=st.subsection||'';
+        if(sec!==lastSec){
+          if(sec){
+            var sh=document.createElement('div');sh.className='vo-sec';
+            sh.textContent=sec;col.appendChild(sh);
+          }
+          lastSec=sec;lastSub=null;
+        }
+        if(sub!==lastSub){
+          if(sub){
+            var sbh=document.createElement('div');sbh.className='vo-subsec';
+            sbh.textContent=sub;col.appendChild(sbh);
+          }
+          lastSub=sub;
+        }
         col.appendChild(traceStep(st,k,g,multi,!!hidden[st.ns],s));
       });
       cols.appendChild(col);
@@ -7289,14 +7486,6 @@ or just download <code>semantic_render.py</code> and run
   }
 
   /* ---------- create mode: sidebar UI ---------- */
-  function firstEmpty(s){
-    /* annot index of the first cell frame without a card, else -1 */
-    if(!s) return -1;
-    var cells=slideCells(s);
-    for(var i=0;i<cells.length;i++)
-      if(!cells[i].a.ref) return cells[i].i;
-    return -1;
-  }
   /* ---------- presentations rail (vertical, left edge) ----------
      One item is active at any time: the "Documents" button (builder
      closed) or a presentation (builder open editing it). */
@@ -7570,7 +7759,7 @@ or just download <code>semantic_render.py</code> and run
     if(nm!==pres.name){
       lsSet(PFX+'last',nm);
       loadPresentation(nm);
-      cur=0;activePane=firstEmpty(pres.slides[0]);
+      cur=0;activePane=-1;
     }
     openDeck('create');
   }
@@ -7670,7 +7859,8 @@ or just download <code>semantic_render.py</code> and run
       } else {
         var t=document.createElement('span');t.className='pane-t';
         t.textContent=a.ref?('missing: '+a.ref)
-          :'empty — click a card in the document';
+          :(ai===activePane?'▸ now click a card in the notebook'
+            :'empty — click to select this frame');
         p.appendChild(t);
       }
       if(a.ref){
@@ -7782,7 +7972,7 @@ or just download <code>semantic_render.py</code> and run
       var tt=document.createElement('span');tt.className='film-t';
       tt.textContent=slideTitle(s);lbl.appendChild(tt);
       if(i!==cur) lbl.addEventListener('click',function(){
-        cur=i;activePane=firstEmpty(s);refresh();});
+        cur=i;activePane=-1;refresh();});
       row.appendChild(lbl);
       var ctr=document.createElement('span');ctr.className='film-ctr';
       [['↑',function(){moveSlide(i,-1);},'Move slide up'],
@@ -7844,8 +8034,37 @@ or just download <code>semantic_render.py</code> and run
       markDirty();refresh();
     });
   })();
+  function presNbs(p){
+    var set={},order=[];
+    (p&&p.slides||[]).forEach(function(s){
+      (s.annots||[]).forEach(function(a){
+        if(a.k==='cell'&&a.ref){
+          var stem=splitRef(a.ref)[0];
+          if(stem&&!set[stem]){set[stem]=1;order.push(stem);}
+        }
+      });
+    });
+    return order;
+  }
+  function renderPresNbs(){
+    var host=$('#dc-nbs'); if(!host) return;
+    host.innerHTML='';
+    var nbs=presNbs(pres);
+    if(!nbs.length){host.hidden=true;return;}
+    host.hidden=false;
+    var l=document.createElement('span');l.className='dc-nbs-l';
+    l.textContent='notebooks';host.appendChild(l);
+    nbs.forEach(function(stem){
+      var open=APP.order.indexOf(stem)>=0;
+      var c=document.createElement('span');
+      c.className='dc-nb'+(open?'':' missing');
+      c.textContent=stem;
+      c.title=open?stem+' — open':stem+' — not currently open';
+      host.appendChild(c);
+    });
+  }
   function renderCreate(){
-    renderPresRow();renderControls();renderFilm();
+    renderPresRow();renderControls();renderPresNbs();renderFilm();
   }
   function moveSlide(i,d){
     var j=i+d; if(j<0||j>=pres.slides.length) return;
@@ -7856,7 +8075,7 @@ or just download <code>semantic_render.py</code> and run
   function delSlide(i){
     pres.slides.splice(i,1);
     if(cur>=pres.slides.length) cur=Math.max(0,pres.slides.length-1);
-    activePane=firstEmpty(pres.slides[cur]);
+    activePane=-1;
     markDirty();refresh();
   }
 
@@ -7889,7 +8108,7 @@ or just download <code>semantic_render.py</code> and run
         document.exitFullscreen().catch(function(){});
     }catch(err){}
     if(creating||editing){
-      activePane=firstEmpty(pres.slides[cur]);
+      activePane=-1;
       renderCreate();
     }
     if(!creating) renderSlide();
@@ -8021,38 +8240,41 @@ or just download <code>semantic_render.py</code> and run
     var card=t.closest('.card');
     if(!card) return;
     if(t.closest('.codetoggle,.depchip,a')) return;
-    e.preventDefault();e.stopPropagation();
-    if(!pres.slides.length){
-      pres.slides.push(emptySlide());cur=0;activePane=0;
-    }
     var s=pres.slides[cur];
+    if(!s){pres.slides.push(emptySlide());cur=pres.slides.length-1;
+      s=pres.slides[cur];}
     if(s.layout==='title'){
+      e.preventDefault();e.stopPropagation();
       toast('This is a title slide — pick a layout to add card frames');
       return;
     }
     var ref=nsKey(shellEl.dataset.nb,card.dataset.anchor);
-    /* already on this slide? repeated clicks must NOT keep adding copies
-       — flash the frame it's in instead of cascading duplicates */
     if(slideCells(s).some(function(c){return c.a.ref===ref;})){
+      e.preventDefault();e.stopPropagation();
       toast('That card is already on this slide');
       card.classList.add('target-flash');
       setTimeout(function(){card.classList.remove('target-flash');},700);
       return;
     }
+    /* deliberate placement: a card lands in the frame the user has
+       SELECTED (armed). When the slide has NO frames yet, the click is
+       unambiguous so we create one; when it HAS empty frames but none
+       is armed, require a selection first (so cards don't jump in while
+       you read the notebook). */
     var target=annotByIdx(s,activePane);
-    if(!target||target.k!=='cell') activePane=firstEmpty(s);
-    if(activePane<0){
-      /* no empty frame: add one, cascading from the last */
-      var cells=slideCells(s);
-      var k2=cells.length;
-      s.annots=s.annots||[];
-      s.annots.push({k:'cell',
-        x:Math.min(6+k2*4,42),y:Math.min(6+k2*4,36),
-        w:47,h:56,ref:null});
-      activePane=s.annots.length-1;
+    if(!target||target.k!=='cell'||target.ref){
+      if(slideCells(s).length===0){
+        s.annots=s.annots||[];
+        s.annots.push({k:'cell',x:8,y:8,w:84,h:84,ref:null});
+        target=annotByIdx(s,s.annots.length-1);
+      } else {
+        toast('Select an empty frame on the slide first, then click');
+        return;
+      }
     }
-    annotByIdx(s,activePane).ref=ref;
-    activePane=firstEmpty(s);
+    e.preventDefault();e.stopPropagation();
+    target.ref=ref;
+    activePane=-1;   /* disarm: adding again needs a fresh frame selection */
     markDirty();refresh();
     card.classList.add('target-flash');
     setTimeout(function(){card.classList.remove('target-flash');},700);
@@ -8062,7 +8284,7 @@ or just download <code>semantic_render.py</code> and run
   $('#film-add').addEventListener('click',function(){
     var at=pres.slides.length?cur+1:0;
     pres.slides.splice(at,0,emptySlide());
-    cur=at;activePane=firstEmpty(pres.slides[at]);
+    cur=at;activePane=-1;
     markDirty();refresh();
   });
   $$('#layout-row .lay').forEach(function(b){
@@ -8096,7 +8318,7 @@ or just download <code>semantic_render.py</code> and run
           }
         });
       }
-      activePane=firstEmpty(s);
+      activePane=-1;
       markDirty();refresh();
     });
   });
@@ -8382,7 +8604,7 @@ or just download <code>semantic_render.py</code> and run
         }
         lsSet(PFX+'last',firstName);
         loadPresentation(firstName);
-        cur=0;activePane=firstEmpty(pres.slides[0]);
+        cur=0;activePane=-1;
         status();refresh();
         toast('Imported '+imported+' presentation'
           +(imported>1?'s':'')+' (as drafts)');
@@ -8394,7 +8616,7 @@ or just download <code>semantic_render.py</code> and run
   menuAction('#mi-discard',function(){
     lsDel(PFX+(pres.name||'untitled'));
     loadPresentation(pres.name);
-    cur=0;activePane=firstEmpty(pres.slides[0]);
+    cur=0;activePane=-1;
     status();
     refresh();
   });
@@ -8411,7 +8633,7 @@ or just download <code>semantic_render.py</code> and run
       .concat(draftNames());
     if(names.length) loadPresentation(names[0]);
     else {pres=defaultPres();source='auto';}
-    cur=0;activePane=firstEmpty(pres.slides[0]);
+    cur=0;activePane=-1;
     status();refresh();
     toast(wasEmbedded
       ?('Deleted "'+nm+'" (it will return if it is embedded in a '

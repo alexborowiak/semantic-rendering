@@ -312,6 +312,8 @@ class Item:
     subsection: str = ""
     is_note: bool = False          # pure-markdown interpretation card
     title_echo: bool = False       # title merely repeats a code line
+    code_kind: str = "code"        # primary code kind (code_kinds[0])
+    code_kinds: list = field(default_factory=lambda: ["code"])
     steps: list[CodeStep] = field(default_factory=list)  # folded code chunks
     members: list = field(default_factory=list)          # transient, build-only
 
@@ -403,6 +405,94 @@ def _csv(value: str) -> list[str]:
     return [x.strip() for x in value.split(",") if x.strip()]
 
 
+_DATA_FNS = {
+    "read_csv", "read_excel", "read_parquet", "read_table", "read_json",
+    "read_hdf", "read_pickle", "read_sql", "read_feather", "read_orc",
+    "read_stata", "read_fwf", "open_dataset", "open_mfdataset", "open_zarr",
+    "open_rasterio", "load_dataset", "loadtxt", "genfromtxt", "fromfile",
+    "Dataset", "read_netcdf",
+}
+_PLOT_METHODS = {
+    "plot", "scatter", "bar", "barh", "hist", "hist2d", "imshow", "contour",
+    "contourf", "pcolormesh", "pcolor", "fill_between", "fill", "errorbar",
+    "boxplot", "violinplot", "heatmap", "subplots", "figure", "add_subplot",
+    "savefig", "stackplot", "step", "stem", "quiver", "streamplot",
+    "colorbar", "set_title", "set_xlabel", "set_ylabel", "axhline",
+    "axvline", "annotate", "lineplot", "displot", "histplot", "kdeplot",
+}
+_PLOT_OBJS = {"plt", "ax", "axes", "sns", "fig", "axs"}
+_SETTINGS_FNS = {
+    "set_options", "filterwarnings", "simplefilter", "use", "set",
+    "set_theme", "set_context", "set_style", "set_palette", "rc",
+    "register_matplotlib_converters",
+}
+_PRINT_FNS = {"print", "display", "pprint"}
+
+
+def _call_pairs(tree: ast.AST) -> list:
+    """(func_name, object_name) for every call — obj is the Name before a
+    method call (plt.plot -> ('plot','plt')), else None."""
+    out = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            fn = node.func
+            if isinstance(fn, ast.Attribute):
+                obj = fn.value.id if isinstance(fn.value, ast.Name) else None
+                out.append((fn.attr, obj))
+            elif isinstance(fn, ast.Name):
+                out.append((fn.id, None))
+    return out
+
+
+def _is_const_value(node: ast.AST) -> bool:
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.UnaryOp) and isinstance(node.operand, ast.Constant):
+        return True
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return all(_is_const_value(e) for e in node.elts)
+    if isinstance(node, ast.Dict):
+        return (all(k is not None and _is_const_value(k) for k in node.keys)
+                and all(_is_const_value(v) for v in node.values))
+    return False
+
+
+def _classify_code(code: str) -> list[str]:
+    """The kinds of things a code cell does, in display order. Usually one
+    (imports / function / data / settings / plotting / print / constant /
+    code); a mixed cell lists several."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return ["code"]
+    body = tree.body
+    if not body:
+        return ["code"]
+    imp = (ast.Import, ast.ImportFrom)
+    defs = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+    calls = _call_pairs(tree)
+    cats: list[str] = []
+    if any(isinstance(n, imp) for n in body):
+        cats.append("imports")
+    if any(isinstance(n, defs) for n in body):
+        cats.append("function")
+    if any(a in _DATA_FNS or a.startswith("read_") or a.startswith("open_")
+           for a, _ in calls):
+        cats.append("data")
+    if (any(a in _SETTINGS_FNS for a, _ in calls) or "rcParams" in code):
+        cats.append("settings")
+    if any(a in _PLOT_METHODS or o in _PLOT_OBJS for a, o in calls):
+        cats.append("plotting")
+    if any(a in _PRINT_FNS for a, _ in calls):
+        cats.append("print")
+    if not cats:
+        if all(isinstance(n, ast.Assign) and _is_const_value(n.value)
+               for n in body):
+            return ["constant"]
+        return ["code"]
+    return cats
+
+
 def _finalize_item(item: Item, used_slugs: set[str],
                    cell_by_id: dict[str, dict]) -> None:
     """Resolve a card from its grouped member cells plus any stacked cells."""
@@ -478,6 +568,8 @@ def _finalize_item(item: Item, used_slugs: set[str],
         item.title = explicit
     else:
         item.title, item.title_echo = _title_from_code(primary["code"])
+    item.code_kinds = _classify_code(primary["code"])
+    item.code_kind = item.code_kinds[0]
     item.caption = (primary["d"].get("caption")
                     or next((m["d"]["caption"] for m in members
                              if m["d"].get("caption")), ""))
@@ -1122,6 +1214,16 @@ def _fig_pager(imgs) -> str:
 def render_item(item: Item) -> str:
     badge = _BADGE.get(item.kind, item.kind)
     kclass = _kind_class(item.kind)
+    ck_attr = ""
+    # a strong code type (imports/function/data/plotting/…) labels the cell
+    # even when it produced some incidental output — but a figure wins.
+    # Mixed cells list a few of the kinds they contain.
+    if (item.kind not in ("figure", "diagnostic")
+            and item.code_kinds != ["code"]):
+        badge = " · ".join(item.code_kinds[:3])
+        kclass += f" ckmain-{item.code_kind}"
+        kclass += "".join(f" ck-{c}" for c in item.code_kinds)
+        ck_attr = f' data-ck="{" ".join(item.code_kinds)}"'
     # mixed outputs (e.g. a printed dataset THEN a plot): the figure is
     # the face; everything else folds into an "also printed" disclosure
     imgs = [o for o in item.outputs if o.has_image]
@@ -1210,7 +1312,7 @@ def render_item(item: Item) -> str:
 
     return (
         f'<article class="card {kclass}" id="card-{item.item_id}" '
-        f'data-kind="{item.kind}" data-node="{item.node_id}" '
+        f'data-kind="{item.kind}" data-node="{item.node_id}"{ck_attr} '
         f'data-note="{"1" if item.is_note else "0"}" '
         f'data-anchor="{html.escape(item.anchor or item.item_id)}" tabindex="-1">'
         f'<header class="cardhead">'
@@ -1239,20 +1341,29 @@ def render_nav(doc: Document) -> str:
                     f'<div class="navsub">{html.escape(it.subsection)}</div>')
                 last_sub = it.subsection
             dot = _kind_class(it.kind)
+            if (it.kind not in ("figure", "diagnostic")
+                    and it.code_kinds != ["code"]):
+                dot += f" ckmain-{it.code_kind}"
             parts.append(
                 f'<a class="navitem {dot}" href="#card-{it.item_id}" '
                 f'data-item="{it.item_id}">'
                 f'<span class="dot"></span>'
                 f'<span class="navitem-t">{html.escape(it.title)}</span></a>')
         parts.append('</div>')
-    # key: one entry per item kind that actually occurs in this notebook
+    # key: one entry per item kind (incl. code subtypes) that occurs here
     labels = {"k-figure": "figure", "k-dataset": "dataset",
               "k-transform": "transform", "k-metric": "metric",
-              "k-note": "note", "k-code": "code"}
+              "k-note": "note", "k-code": "code",
+              "ckmain-imports": "imports", "ckmain-function": "function",
+              "ckmain-data": "data", "ckmain-constant": "constant",
+              "ckmain-settings": "settings", "ckmain-plotting": "plotting",
+              "ckmain-print": "print"}
     seen: list[str] = []
     for s in doc.sections:
         for it in s.items:
-            kc = _kind_class(it.kind)
+            kc = (f"ckmain-{it.code_kind}"
+                  if it.kind not in ("figure", "diagnostic")
+                  and it.code_kinds != ["code"] else _kind_class(it.kind))
             if kc not in seen:
                 seen.append(kc)
     if seen:
@@ -1300,7 +1411,11 @@ def deck_payload(doc: Document) -> str:
                 "card": it.item_id,
                 "title": it.title,
                 "kind": "note" if it.is_note else it.kind,
+                "codeKind": it.code_kind,
+                "codeKinds": it.code_kinds,
                 "section": s.section_id,
+                "sectitle": s.title,
+                "subsection": it.subsection or "",
                 "hasCode": any(st.code.strip() for st in it.steps),
                 "chain": it.chain,
             })
@@ -1481,6 +1596,28 @@ body{margin:0;font-family:var(--sans);color:var(--ink);
   border-radius:50%;}
 .navitem.k-code .dot,.nk.k-code .dot{background:#56627033;
   border:1px solid #ffffff22;}
+.navitem.ckmain-imports .dot,.nk.ckmain-imports .dot{background:#a3855c;}
+.navitem.ckmain-function .dot,.nk.ckmain-function .dot{background:#46a892;}
+.navitem.ckmain-data .dot,.nk.ckmain-data .dot{background:#4d90c0;}
+.navitem.ckmain-constant .dot,.nk.ckmain-constant .dot{background:#9a7cc0;}
+.navitem.ckmain-settings .dot,.nk.ckmain-settings .dot{background:#5b7589;}
+.navitem.ckmain-plotting .dot,.nk.ckmain-plotting .dot{background:#39a9c0;}
+.navitem.ckmain-print .dot,.nk.ckmain-print .dot{background:#cf9a4e;}
+/* light theme needs its own — a generic body.light .dot outranks these */
+body.light .navitem.ckmain-imports .dot,body.light .nk.ckmain-imports .dot{
+  background:#a3855c;}
+body.light .navitem.ckmain-function .dot,body.light .nk.ckmain-function .dot{
+  background:#46a892;}
+body.light .navitem.ckmain-data .dot,body.light .nk.ckmain-data .dot{
+  background:#4d90c0;}
+body.light .navitem.ckmain-constant .dot,body.light .nk.ckmain-constant .dot{
+  background:#9a7cc0;}
+body.light .navitem.ckmain-settings .dot,body.light .nk.ckmain-settings .dot{
+  background:#5b7589;}
+body.light .navitem.ckmain-plotting .dot,body.light .nk.ckmain-plotting .dot{
+  background:#39a9c0;}
+body.light .navitem.ckmain-print .dot,body.light .nk.ckmain-print .dot{
+  background:#cf9a4e;}
 
 /* ---------- nav key (what the dot colours mean) ---------- */
 .navkey{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center;
@@ -1620,6 +1757,23 @@ body:not(.light) .docbar-p{color:#8ba0b2;}
 .k-transform .badge{background:#5b758914;color:#41566a;}
 .k-metric .badge{background:#46a89214;color:#2c8c7d;}
 .k-note .badge{background:#cf9a4e1f;color:#8a6326;}
+/* code subtypes (base rules read on the light paper theme) */
+.ckmain-imports .badge{background:#8a6d4a1a;color:#7a5e38;}
+.ckmain-function .badge{background:#46a89218;color:#2c8c7d;}
+.ckmain-data .badge{background:#4d90c018;color:#2f6f9e;}
+.ckmain-constant .badge{background:#9a7cc01f;color:#6d4f95;}
+.ckmain-settings .badge{background:#5b758918;color:#41566a;}
+.ckmain-plotting .badge{background:#39a9c018;color:var(--cyan-deep);}
+.ckmain-print .badge{background:#cf9a4e1f;color:#8a6326;}
+/* dark theme (default) needs its own — a generic dark .badge otherwise
+   outranks the base rules above */
+body:not(.light) .ckmain-imports .badge{background:#8a6d4a2b;color:#c8a877;}
+body:not(.light) .ckmain-function .badge{background:#46a8922b;color:#7fd0bd;}
+body:not(.light) .ckmain-data .badge{background:#4d90c02b;color:#8fbfe0;}
+body:not(.light) .ckmain-constant .badge{background:#9a7cc02b;color:#c3a9e0;}
+body:not(.light) .ckmain-settings .badge{background:#5b75892b;color:#a7bccd;}
+body:not(.light) .ckmain-plotting .badge{background:#39a9c02b;color:#5fc3d8;}
+body:not(.light) .ckmain-print .badge{background:#cf9a4e2b;color:#dfb277;}
 .cardtitle{font-size:16px;font-weight:600;margin:0;letter-spacing:-.01em;
   flex:1;min-width:0;}
 /* titles that merely echo the first code line label the item in the
@@ -1680,6 +1834,13 @@ pre.result,pre.stream,pre.error{font-family:var(--mono);font-size:12px;
   background:var(--paper-2);border:1px solid var(--paper-3);
   border-radius:7px;padding:11px 13px;overflow:auto;margin:0;line-height:1.45;}
 pre.error{background:#fbf0ee;border-color:#f0d2cc;color:#8a3221;}
+/* a huge printout (1000s of lines) scrolls inside a capped box in the
+   document + raw views instead of running the whole page on. Short
+   outputs are unaffected; slide frames keep their own sizing. */
+.content pre.result,.content pre.stream,.content pre.error,
+.content .rich,.content .xr-wrap,.content .alsoinner,
+.rawview pre.result,.rawview pre.stream,.rawview .rich,
+.rawview .xr-wrap{max-height:min(440px,62vh);overflow:auto;}
 .card.k-metric .cardbody pre.result{font-size:14px;
   background:#46a8920d;border-color:#46a89233;color:#1f5f54;
   font-weight:500;}
@@ -2216,6 +2377,33 @@ body.creating-docs .apptop{
   body:not(.tocshow) .nbshell .rail{display:none;}
 }
 
+/* ---------- advanced code-type filter menu ---------- */
+.ckfilter-menu{position:fixed;z-index:200;background:#16273a;
+  border:1px solid #ffffff22;border-radius:8px;padding:8px;
+  box-shadow:0 12px 40px #00000066;min-width:150px;}
+.ckfilter-menu[hidden]{display:none;}
+.ckf-h{font-family:var(--mono);font-size:9px;letter-spacing:.14em;
+  text-transform:uppercase;color:#7e93a4;padding:2px 6px 6px;}
+.ckf-row{display:flex;align-items:center;gap:8px;padding:5px 6px;
+  font-family:var(--mono);font-size:11.5px;color:#cdd9e3;cursor:pointer;
+  border-radius:5px;text-transform:capitalize;}
+.ckf-row:hover{background:#ffffff0c;}
+.ckf-row input{cursor:pointer;}
+.ckf-dot{width:8px;height:8px;border-radius:3px;flex:none;background:#8ba0b2;}
+.ckf-dot.ckmain-imports{background:#a3855c;}
+.ckf-dot.ckmain-function{background:#46a892;}
+.ckf-dot.ckmain-data{background:#4d90c0;}
+.ckf-dot.ckmain-constant{background:#9a7cc0;}
+.ckf-dot.ckmain-settings{background:#5b7589;}
+.ckf-dot.ckmain-plotting{background:#39a9c0;}
+.ckf-dot.ckmain-print{background:#cf9a4e;}
+.ckf-empty{color:#7e93a4;font-size:11px;padding:8px;}
+#ck-filter-btn.on{border-color:var(--cyan);color:#fff;background:#39a9c022;}
+body.light .ckfilter-menu{background:#fff;border-color:var(--line);}
+body.light .ckf-row{color:var(--ink-2);}
+body.light .ckf-row:hover{background:#00000008;}
+body.light .ckf-h{color:var(--ink-3);}
+
 /* ---------- instant tooltips (replaces slow native titles) -------- */
 .apptip{position:fixed;z-index:300;background:#0e1926;color:#dce6ee;
   font-family:var(--sans);font-size:11.5px;line-height:1.45;
@@ -2292,6 +2480,11 @@ body.light .dc-presname{color:var(--ink);}
 body.light #pres-name,body.light .title-editor input{
   background:#fff;border-color:var(--line);color:var(--ink);}
 body.light .dc-hint{color:var(--ink-3);}
+body.light .dc-nbs-l{color:var(--ink-3);}
+body.light .dc-nb{color:var(--cyan-deep);background:#39a9c012;
+  border-color:#39a9c033;}
+body.light .dc-nb.missing{color:#8a5a1e;background:#cf9a4e14;
+  border-color:#cf9a4e40;}
 body.light .dc-menu{background:#fff;border-color:var(--line);}
 body.light .dc-mi{color:var(--ink-2);}
 body.light .dc-mi:hover{background:#39a9c026;}
@@ -2575,6 +2768,9 @@ _JS = r"""
 
   /* ---- global show/hide filters (top bar; apply to every tab) ---- */
   var vis={figs:true,markup:true,code:true};
+  var ckHidden={};   /* advanced: code subtypes the user has hidden */
+  var CK_TYPES=['imports','function','data','settings',
+    'plotting','print','constant'];
   var TYPES=[['figs','figures'],['markup','markup'],['code','code']];
   function renderTypeButtons(){
     TYPES.forEach(function(p){
@@ -2589,11 +2785,65 @@ _JS = r"""
       var kind=c.dataset.kind,note=c.dataset.note==='1';
       var show=note?vis.markup
         :(kind==='figure'||kind==='diagnostic')?vis.figs:vis.code;
+      /* advanced: hide a code cell whose primary type is filtered out */
+      if(show&&!note&&kind!=='figure'&&kind!=='diagnostic'&&c.dataset.ck){
+        if(ckHidden[c.dataset.ck.split(' ')[0]]) show=false;
+      }
       c.classList.toggle('is-stub',!show);
       if(show) c.classList.remove('stub-open');
     });
     renderTypeButtons();
+    var fb=$('#ck-filter-btn');
+    if(fb) fb.classList.toggle('on',Object.keys(ckHidden).length>0);
   }
+  /* advanced filter menu: hide specific code subtypes */
+  function presentCkTypes(){
+    var set={};
+    $$('.nbshell .card[data-ck]').forEach(function(c){
+      c.dataset.ck.split(' ').forEach(function(t){set[t]=1;});});
+    return CK_TYPES.filter(function(t){return set[t];});
+  }
+  function renderCkMenu(){
+    var m=$('#ck-filter-menu'); if(!m) return;
+    m.innerHTML='';
+    var types=presentCkTypes();
+    if(!types.length){
+      m.innerHTML='<div class="ckf-empty">No typed code cells yet</div>';
+      return;
+    }
+    var h=document.createElement('div');h.className='ckf-h';
+    h.textContent='show code types';m.appendChild(h);
+    types.forEach(function(t){
+      var row=document.createElement('label');row.className='ckf-row';
+      var cb=document.createElement('input');cb.type='checkbox';
+      cb.checked=!ckHidden[t];
+      cb.addEventListener('change',function(){
+        if(cb.checked) delete ckHidden[t]; else ckHidden[t]=1;
+        applyFilters();
+      });
+      var sw=document.createElement('span');
+      sw.className='ckf-dot ckmain-'+t;
+      var tx=document.createElement('span');tx.textContent=t;
+      row.appendChild(cb);row.appendChild(sw);row.appendChild(tx);
+      m.appendChild(row);
+    });
+  }
+  var ckBtn=$('#ck-filter-btn'),ckMenu=$('#ck-filter-menu');
+  if(ckBtn) ckBtn.addEventListener('click',function(e){
+    e.stopPropagation();
+    if(!ckMenu) return;
+    if(ckMenu.hidden){
+      renderCkMenu();ckMenu.hidden=false;
+      var r=ckBtn.getBoundingClientRect();
+      ckMenu.style.top=(r.bottom+6)+'px';
+      ckMenu.style.left=Math.max(6,
+        Math.min(r.left,window.innerWidth-190))+'px';
+    } else ckMenu.hidden=true;
+  });
+  document.addEventListener('click',function(e){
+    if(ckMenu&&!ckMenu.hidden&&!ckMenu.contains(e.target)
+       &&e.target!==ckBtn) ckMenu.hidden=true;
+  });
   /* "Show code" means ALL code: code cards AND the blocks folded under
      every figure / dataset card */
   var codeAllOpen=null;   /* null until the user toggles */
@@ -3468,6 +3718,7 @@ _DECK_HTML = """
         <button class="dbtn" id="dc-edit"
           title="Open this slide full-screen; add text, arrows and boxes">
           &#9998; Edit slide</button>
+        <div class="dc-nbs" id="dc-nbs" hidden></div>
       </div>
       <div class="dc-block dc-film">
         <div class="film-list" id="film-list"></div>
@@ -3697,6 +3948,14 @@ body.deck-open{overflow:hidden;}
   display:flex;align-items:center;gap:8px;min-width:0;}
 .vo-col-h span{overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;}
+/* section (## heading) + subsection (### heading) dividers in the trace */
+.vo-sec{font-family:var(--mono);font-size:10px;font-weight:600;
+  letter-spacing:.12em;text-transform:uppercase;color:#dbe7ef;
+  padding:8px 2px 4px;margin-top:6px;
+  border-bottom:1px solid #ffffff1f;}
+.vo-col>.vo-sec:first-of-type,.vo-col-h+.vo-sec{margin-top:0;}
+.vo-subsec{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;
+  color:#8ba0b2;padding:5px 2px 2px;}
 .vo-step{display:flex;flex-direction:column;background:#12202e;
   border:1px solid #ffffff14;border-radius:8px;overflow:hidden;
   flex:none;min-width:0;transition:border-color .15s;}
@@ -3737,8 +3996,11 @@ body.deck-open{overflow:hidden;}
 /* scrollable playback: the slide fills the screen, the trace flows
    beneath it — scroll (or ArrowDown) between them */
 .deck-stage.scrolly{display:block;overflow-y:auto;
-  scroll-snap-type:y proximity;}
-.vpage{height:100%;display:flex;flex-direction:column;min-width:0;
+  scroll-snap-type:y proximity;padding-top:0;padding-bottom:0;}
+/* the slide fills the viewport EXACTLY so the code trace sits fully
+   below the fold — its buttons never peek out under the slide */
+.vpage{height:100%;box-sizing:border-box;padding:22px 0 8px;
+  display:flex;flex-direction:column;min-width:0;
   scroll-snap-align:start;}
 .vtrace{scroll-snap-align:start;display:flex;flex-direction:column;
   gap:14px;padding:26px 0 60px;min-height:70%;}
@@ -3841,7 +4103,15 @@ body.deck-open{overflow:hidden;}
   transition:transform .2s;}
 .chain-h[aria-expanded="true"] .chain-chev{transform:rotate(90deg);}
 .chain-badge{font-size:9px;padding:2px 7px;border-radius:4px;
-  background:#39a9c01f;color:#5fc3d8;letter-spacing:.1em;flex:none;}
+  background:#39a9c01f;color:#5fc3d8;letter-spacing:.1em;flex:none;
+  text-transform:lowercase;}
+.chain-badge.ckmain-imports{background:#8a6d4a2b;color:#c8a877;}
+.chain-badge.ckmain-function{background:#46a8922b;color:#7fd0bd;}
+.chain-badge.ckmain-data{background:#4d90c02b;color:#8fbfe0;}
+.chain-badge.ckmain-constant{background:#9a7cc02b;color:#c3a9e0;}
+.chain-badge.ckmain-settings{background:#5b75892b;color:#a7bccd;}
+.chain-badge.ckmain-plotting{background:#39a9c02b;color:#5fc3d8;}
+.chain-badge.ckmain-print{background:#cf9a4e2b;color:#dfb277;}
 .chain-t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .chain-b{padding:0 4px 10px;}
 
@@ -3916,6 +4186,16 @@ body.creating-docs .card:hover{outline:2px solid var(--cyan);
    in the builder; keep the element for the File > Rename flow only */
 #pres-current{display:none;}
 .dc-controls{display:flex;flex-direction:column;gap:9px;}
+/* which notebooks this presentation pulls cards from */
+.dc-nbs{display:flex;flex-wrap:wrap;align-items:center;gap:5px;}
+.dc-nbs[hidden]{display:none;}
+.dc-nbs-l{font-family:var(--mono);font-size:8.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:#7e93a4;margin-right:2px;}
+.dc-nb{font-family:var(--mono);font-size:10px;color:#a9c4d3;
+  background:#39a9c018;border:1px solid #39a9c033;border-radius:20px;
+  padding:2px 9px;}
+.dc-nb.missing{color:#c9a06a;background:#cf9a4e18;
+  border-color:#cf9a4e40;}
 #pres-name{width:100%;background:#16273a;border:1px solid #ffffff22;
   color:#dce6ee;font-family:var(--sans);font-size:12.5px;padding:7px 9px;
   border-radius:6px;box-sizing:border-box;}
@@ -4068,6 +4348,10 @@ ul.an-ul li{margin:.18em 0;white-space:pre-wrap;}
   display:flex;flex-direction:column;}
 .deck.editing .an-cell{cursor:move;}
 .deck:not(.editing) .an-cell.empty{display:none;}
+/* clean playback: a frame is just its content — no header title, no
+   badge, no frame border (the editor/builder keep them for orientation) */
+.vpage .an-cell{border:none;background:none;}
+.vpage .an-cellhead{display:none;}
 .an-cellhead{flex:none;display:flex;align-items:center;gap:8px;
   padding:8px 12px 0;min-width:0;}
 .an-cellhead-t{font-size:13px;font-weight:600;color:#dbe7ef;
@@ -4168,7 +4452,9 @@ body.picking .card:hover{outline:2px solid #fff;outline-offset:2px;}
 .pane.filled .an-cell{position:absolute;inset:0;width:auto;height:auto;
   cursor:pointer;pointer-events:none;}
 .pane.active{outline:2px solid var(--cyan);outline-offset:1px;}
-.pane.empty.active{border-color:var(--cyan);}
+.pane.empty.active{border-color:var(--cyan);border-style:solid;
+  background:#39a9c018;box-shadow:0 0 0 2px #39a9c04d inset;}
+.pane.empty.active .pane-t{color:var(--cyan);}
 .pane-t{font-size:10.5px;line-height:1.35;color:#c3d2df;text-align:center;
   overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;
   -webkit-box-orient:vertical;}
@@ -4735,7 +5021,11 @@ _DECK_JS = r"""
     if(multi){n.style.background=g.color+'26';n.style.color=g.color;}
     h.appendChild(n);
     var bd=document.createElement('span');
-    bd.className='chain-badge';bd.textContent=st.kind;
+    var cks=st.codeKinds||(st.codeKind?[st.codeKind]:['code']);
+    var codey=st.kind!=='figure'&&st.kind!=='diagnostic'
+      &&!(cks.length===1&&cks[0]==='code');
+    bd.className='chain-badge '+(codey?('ckmain-'+cks[0]):'');
+    bd.textContent=codey?cks.slice(0,3).join(' · '):st.kind;
     h.appendChild(bd);
     var bt=document.createElement('span');bt.className='vo-step-t';
     bt.textContent=st.title;h.appendChild(bt);
@@ -4839,7 +5129,25 @@ _DECK_JS = r"""
       var hs=document.createElement('span');
       hs.textContent=g.it.title;h.appendChild(hs);
       col.appendChild(h);
+      /* partition the steps under their notebook section (## heading)
+         and subsection (### heading) — code grouped like the notebook */
+      var lastSec=null,lastSub=null;
       vis.forEach(function(st,k){
+        var sec=st.sectitle||'',sub=st.subsection||'';
+        if(sec!==lastSec){
+          if(sec){
+            var sh=document.createElement('div');sh.className='vo-sec';
+            sh.textContent=sec;col.appendChild(sh);
+          }
+          lastSec=sec;lastSub=null;
+        }
+        if(sub!==lastSub){
+          if(sub){
+            var sbh=document.createElement('div');sbh.className='vo-subsec';
+            sbh.textContent=sub;col.appendChild(sbh);
+          }
+          lastSub=sub;
+        }
         col.appendChild(traceStep(st,k,g,multi,!!hidden[st.ns],s));
       });
       cols.appendChild(col);
@@ -5653,14 +5961,6 @@ _DECK_JS = r"""
   }
 
   /* ---------- create mode: sidebar UI ---------- */
-  function firstEmpty(s){
-    /* annot index of the first cell frame without a card, else -1 */
-    if(!s) return -1;
-    var cells=slideCells(s);
-    for(var i=0;i<cells.length;i++)
-      if(!cells[i].a.ref) return cells[i].i;
-    return -1;
-  }
   /* ---------- presentations rail (vertical, left edge) ----------
      One item is active at any time: the "Documents" button (builder
      closed) or a presentation (builder open editing it). */
@@ -5934,7 +6234,7 @@ _DECK_JS = r"""
     if(nm!==pres.name){
       lsSet(PFX+'last',nm);
       loadPresentation(nm);
-      cur=0;activePane=firstEmpty(pres.slides[0]);
+      cur=0;activePane=-1;
     }
     openDeck('create');
   }
@@ -6034,7 +6334,8 @@ _DECK_JS = r"""
       } else {
         var t=document.createElement('span');t.className='pane-t';
         t.textContent=a.ref?('missing: '+a.ref)
-          :'empty — click a card in the document';
+          :(ai===activePane?'▸ now click a card in the notebook'
+            :'empty — click to select this frame');
         p.appendChild(t);
       }
       if(a.ref){
@@ -6146,7 +6447,7 @@ _DECK_JS = r"""
       var tt=document.createElement('span');tt.className='film-t';
       tt.textContent=slideTitle(s);lbl.appendChild(tt);
       if(i!==cur) lbl.addEventListener('click',function(){
-        cur=i;activePane=firstEmpty(s);refresh();});
+        cur=i;activePane=-1;refresh();});
       row.appendChild(lbl);
       var ctr=document.createElement('span');ctr.className='film-ctr';
       [['↑',function(){moveSlide(i,-1);},'Move slide up'],
@@ -6208,8 +6509,37 @@ _DECK_JS = r"""
       markDirty();refresh();
     });
   })();
+  function presNbs(p){
+    var set={},order=[];
+    (p&&p.slides||[]).forEach(function(s){
+      (s.annots||[]).forEach(function(a){
+        if(a.k==='cell'&&a.ref){
+          var stem=splitRef(a.ref)[0];
+          if(stem&&!set[stem]){set[stem]=1;order.push(stem);}
+        }
+      });
+    });
+    return order;
+  }
+  function renderPresNbs(){
+    var host=$('#dc-nbs'); if(!host) return;
+    host.innerHTML='';
+    var nbs=presNbs(pres);
+    if(!nbs.length){host.hidden=true;return;}
+    host.hidden=false;
+    var l=document.createElement('span');l.className='dc-nbs-l';
+    l.textContent='notebooks';host.appendChild(l);
+    nbs.forEach(function(stem){
+      var open=APP.order.indexOf(stem)>=0;
+      var c=document.createElement('span');
+      c.className='dc-nb'+(open?'':' missing');
+      c.textContent=stem;
+      c.title=open?stem+' — open':stem+' — not currently open';
+      host.appendChild(c);
+    });
+  }
   function renderCreate(){
-    renderPresRow();renderControls();renderFilm();
+    renderPresRow();renderControls();renderPresNbs();renderFilm();
   }
   function moveSlide(i,d){
     var j=i+d; if(j<0||j>=pres.slides.length) return;
@@ -6220,7 +6550,7 @@ _DECK_JS = r"""
   function delSlide(i){
     pres.slides.splice(i,1);
     if(cur>=pres.slides.length) cur=Math.max(0,pres.slides.length-1);
-    activePane=firstEmpty(pres.slides[cur]);
+    activePane=-1;
     markDirty();refresh();
   }
 
@@ -6253,7 +6583,7 @@ _DECK_JS = r"""
         document.exitFullscreen().catch(function(){});
     }catch(err){}
     if(creating||editing){
-      activePane=firstEmpty(pres.slides[cur]);
+      activePane=-1;
       renderCreate();
     }
     if(!creating) renderSlide();
@@ -6385,38 +6715,41 @@ _DECK_JS = r"""
     var card=t.closest('.card');
     if(!card) return;
     if(t.closest('.codetoggle,.depchip,a')) return;
-    e.preventDefault();e.stopPropagation();
-    if(!pres.slides.length){
-      pres.slides.push(emptySlide());cur=0;activePane=0;
-    }
     var s=pres.slides[cur];
+    if(!s){pres.slides.push(emptySlide());cur=pres.slides.length-1;
+      s=pres.slides[cur];}
     if(s.layout==='title'){
+      e.preventDefault();e.stopPropagation();
       toast('This is a title slide — pick a layout to add card frames');
       return;
     }
     var ref=nsKey(shellEl.dataset.nb,card.dataset.anchor);
-    /* already on this slide? repeated clicks must NOT keep adding copies
-       — flash the frame it's in instead of cascading duplicates */
     if(slideCells(s).some(function(c){return c.a.ref===ref;})){
+      e.preventDefault();e.stopPropagation();
       toast('That card is already on this slide');
       card.classList.add('target-flash');
       setTimeout(function(){card.classList.remove('target-flash');},700);
       return;
     }
+    /* deliberate placement: a card lands in the frame the user has
+       SELECTED (armed). When the slide has NO frames yet, the click is
+       unambiguous so we create one; when it HAS empty frames but none
+       is armed, require a selection first (so cards don't jump in while
+       you read the notebook). */
     var target=annotByIdx(s,activePane);
-    if(!target||target.k!=='cell') activePane=firstEmpty(s);
-    if(activePane<0){
-      /* no empty frame: add one, cascading from the last */
-      var cells=slideCells(s);
-      var k2=cells.length;
-      s.annots=s.annots||[];
-      s.annots.push({k:'cell',
-        x:Math.min(6+k2*4,42),y:Math.min(6+k2*4,36),
-        w:47,h:56,ref:null});
-      activePane=s.annots.length-1;
+    if(!target||target.k!=='cell'||target.ref){
+      if(slideCells(s).length===0){
+        s.annots=s.annots||[];
+        s.annots.push({k:'cell',x:8,y:8,w:84,h:84,ref:null});
+        target=annotByIdx(s,s.annots.length-1);
+      } else {
+        toast('Select an empty frame on the slide first, then click');
+        return;
+      }
     }
-    annotByIdx(s,activePane).ref=ref;
-    activePane=firstEmpty(s);
+    e.preventDefault();e.stopPropagation();
+    target.ref=ref;
+    activePane=-1;   /* disarm: adding again needs a fresh frame selection */
     markDirty();refresh();
     card.classList.add('target-flash');
     setTimeout(function(){card.classList.remove('target-flash');},700);
@@ -6426,7 +6759,7 @@ _DECK_JS = r"""
   $('#film-add').addEventListener('click',function(){
     var at=pres.slides.length?cur+1:0;
     pres.slides.splice(at,0,emptySlide());
-    cur=at;activePane=firstEmpty(pres.slides[at]);
+    cur=at;activePane=-1;
     markDirty();refresh();
   });
   $$('#layout-row .lay').forEach(function(b){
@@ -6460,7 +6793,7 @@ _DECK_JS = r"""
           }
         });
       }
-      activePane=firstEmpty(s);
+      activePane=-1;
       markDirty();refresh();
     });
   });
@@ -6746,7 +7079,7 @@ _DECK_JS = r"""
         }
         lsSet(PFX+'last',firstName);
         loadPresentation(firstName);
-        cur=0;activePane=firstEmpty(pres.slides[0]);
+        cur=0;activePane=-1;
         status();refresh();
         toast('Imported '+imported+' presentation'
           +(imported>1?'s':'')+' (as drafts)');
@@ -6758,7 +7091,7 @@ _DECK_JS = r"""
   menuAction('#mi-discard',function(){
     lsDel(PFX+(pres.name||'untitled'));
     loadPresentation(pres.name);
-    cur=0;activePane=firstEmpty(pres.slides[0]);
+    cur=0;activePane=-1;
     status();
     refresh();
   });
@@ -6775,7 +7108,7 @@ _DECK_JS = r"""
       .concat(draftNames());
     if(names.length) loadPresentation(names[0]);
     else {pres=defaultPres();source='auto';}
-    cur=0;activePane=firstEmpty(pres.slides[0]);
+    cur=0;activePane=-1;
     status();refresh();
     toast(wasEmbedded
       ?('Deleted "'+nm+'" (it will return if it is embedded in a '
@@ -6857,6 +7190,9 @@ _TEMPLATE = """<!doctype html>
     <button class="toggle tv" id="tv-code"
       title="Show or hide ALL code: code cards and the code folded under
  every figure and dataset"></button>
+    <button class="toggle" id="ck-filter-btn"
+      title="Advanced: hide specific code cell types (imports, plotting,
+ …)">Types &#9662;</button>
     <button class="toggle" id="view-raw"
       title="Toggle between the semantic view and the raw notebook
  (cells in order, directives visible)">Raw notebook</button>
@@ -6963,6 +7299,7 @@ _TEMPLATE = """<!doctype html>
   </div>
 </div>
 <div class="drophint" id="drophint" hidden>Drop .ipynb files to open</div>
+<div class="ckfilter-menu" id="ck-filter-menu" hidden></div>
 <input type="file" id="fileinput" accept=".ipynb" multiple hidden>
 <input type="file" id="deckfile" accept=".json" hidden>
 {deck_shell}
@@ -7558,6 +7895,35 @@ def _self_test() -> None:
     # a frame can show a cell's code / figure / output part, and split
     assert "framePart" in out and "cellFacets" in out
     assert "buildPartChooser" in out and "splitFrame" in out
+    # trace partitions by notebook section; playback frames are clean
+    assert '"sectitle"' in out and '"subsection"' in out
+    assert "vo-sec" in out and ".vpage .an-cellhead{display:none" in out
+    # code-cell subtypes (each returns an ordered list of the kinds present)
+    assert _classify_code("import numpy as np\nimport pandas as pd") \
+        == ["imports"]
+    assert _classify_code("def rescale(a):\n    return a/a.max()") \
+        == ["function"]
+    assert _classify_code("q = 99\nSTD = 1.0") == ["constant"]
+    assert _classify_code("ds = xr.open_mfdataset(paths)") == ["data"]
+    assert _classify_code("df = pd.read_csv('a.csv')") == ["data"]
+    assert _classify_code("x = compute(y) + 1") == ["code"]
+    assert _classify_code("plt.plot(x, y)\nax.set_title('t')") == ["plotting"]
+    assert _classify_code("print(result)") == ["print"]
+    assert _classify_code("xr.set_options(display_expand_data=False)") \
+        == ["settings"]
+    # mixed cells list several kinds, in order
+    assert _classify_code("import xr\ndef f():\n    pass") \
+        == ["imports", "function"]
+    assert _classify_code("df = pd.read_csv('a')\ndf.plot()") \
+        == ["data", "plotting"]
+    assert '"codeKinds"' in out and "ckmain-function" in out
+    assert "body:not(.light) .ckmain-data .badge" in out
+    assert "body.light .navitem.ckmain-data .dot" in out
+    # notebooks-in-presentation chips + advanced code-type filter
+    assert 'id="dc-nbs"' in out and "renderPresNbs" in out
+    assert 'id="ck-filter-btn"' in out and 'id="ck-filter-menu"' in out
+    # huge printed output is capped + scrollable in the document view
+    assert "max-height:min(440px,62vh)" in out
     assert 'data-anchor="clim"' in out and 'data-anchor="cell:md1"' in out
     assert '"stem": "demo"' in out or '"stem":"demo"' in out
     # markdown notes: bullets + bold survive, math left for MathJax
