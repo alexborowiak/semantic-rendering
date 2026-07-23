@@ -1504,6 +1504,21 @@ body{margin:0;font-family:var(--sans);color:var(--ink);
   drop-shadow(0 0 6px #39a9c077);}
 .provnode:focus-visible rect{stroke:var(--cyan);outline:none;}
 
+/* ---------- document identity bar (filename + full path) ---------- */
+.docbar{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;
+  padding:2px 0 14px;margin-bottom:6px;border-bottom:1px solid var(--line);}
+.docbar[hidden]{display:none;}
+.docbar-ic{font-size:13px;flex:none;opacity:.7;}
+.docbar-nm{font-size:15px;font-weight:600;color:var(--ink);
+  letter-spacing:-.01em;}
+.docbar-p{font-family:var(--mono);font-size:11px;color:var(--ink-3);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  max-width:100%;min-width:0;flex:1;direction:rtl;text-align:left;}
+.docbar-p:empty{display:none;}
+body:not(.light) .docbar{border-bottom-color:#ffffff14;}
+body:not(.light) .docbar-nm{color:#e6edf3;}
+body:not(.light) .docbar-p{color:#8ba0b2;}
+
 /* ---------- toolbar ---------- */
 .toolbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;
   gap:12px;padding:12px 28px;background:#fbfcfdf2;
@@ -2147,6 +2162,22 @@ body.creating-docs .apptop{
   flex:none;}
 .odlg-empty{padding:26px;text-align:center;color:var(--ink-3);
   font-size:12.5px;}
+/* remembered files: reopen anything you've had open, name over path */
+.odlg-recent{flex:none;border-bottom:1px solid var(--line);
+  padding:8px 8px 10px;max-height:190px;overflow-y:auto;}
+.odlg-recent[hidden]{display:none;}
+.odlg-recent-h{font-family:var(--mono);font-size:9px;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--ink-3);padding:2px 6px 6px;}
+.odlg-r{display:flex;flex-direction:column;gap:1px;width:100%;
+  background:none;border:none;padding:6px 10px;border-radius:6px;
+  cursor:pointer;text-align:left;}
+.odlg-r:hover{background:var(--paper-2);}
+.odlg-r-nm{font-size:12.5px;color:var(--cyan-deep);font-weight:500;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  max-width:100%;}
+.odlg-r-p{font-family:var(--mono);font-size:10px;color:var(--ink-3);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  max-width:100%;direction:rtl;text-align:left;}
 .odlg-foot{border-top:1px solid var(--line);padding:10px 12px;}
 #odlg-input{width:100%;box-sizing:border-box;font-family:var(--mono);
   font-size:11.5px;border:1px solid var(--line);border-radius:6px;
@@ -2809,6 +2840,23 @@ _JS = r"""
     var stem=shell.dataset.nb||data.stem||('nb-'+(APP.order.length+1));
     mdClampScan(shell);
 
+    /* ---- filename + path bar at the top of the document ---- */
+    var db=$('.docbar',shell);
+    if(db){
+      var p=shell.dataset.path||'';
+      var nmEl=$('.docbar-nm',db), pEl=$('.docbar-p',db);
+      if(p){
+        var parts=p.split(/[\/\\]/);
+        var base=parts[parts.length-1]||p;
+        base=base.split('?')[0].split('#')[0];
+        try{base=decodeURIComponent(base);}catch(e){}
+        if(nmEl&&base) nmEl.textContent=base;
+        if(pEl){pEl.textContent=p;pEl.dir='ltr';
+          pEl.title=p;}
+      } else if(pEl){pEl.textContent='';}
+      db.hidden=false;
+    }
+
     /* ---- reveal on scroll ---- */
     var cards=$$('.card',shell);
     if('IntersectionObserver' in window){
@@ -2961,6 +3009,7 @@ _JS = r"""
     if(old&&old.el.parentNode) host.replaceChild(shell,old.el);
     else host.appendChild(shell);
     initShell(shell);
+    if(path&&APP.noteRecent) APP.noteRecent(path);
     activate(stem);
     if(window.MathJax&&MathJax.typesetPromise)
       MathJax.typesetPromise([shell]).catch(function(){});
@@ -3065,7 +3114,12 @@ _JS = r"""
       if(!webReady()) throw new Error('Python is still loading');
       var name=decodeURIComponent(
         url.split('?')[0].split('/').pop()||'notebook.ipynb');
-      var shell=window.semPy.parse(name,txt,APP.order);
+      /* reloading: exclude the tab that already holds this URL from the
+         "taken" names so the parser reproduces its stem and we REPLACE
+         that tab in place instead of minting a new one */
+      var taken=APP.order.filter(function(s){
+        return !(APP.shells[s]&&APP.shells[s].path===url);});
+      var shell=window.semPy.parse(name,txt,taken);
       mountShellHTML(shell,url);
       webNote(url);
       done();
@@ -3107,9 +3161,48 @@ _JS = r"""
   var dlg=$('#opendlg'), dlgList=$('#odlg-list'), dlgPath=$('#odlg-path');
   var dlgDir='';
   function hideDlg(){if(dlg) dlg.hidden=true;}
+  /* remembered files: name-over-path, reopen anything you've had open */
+  function splitPath(p){
+    var s=String(p||'');
+    var parts=s.split(/[\/\\]/);
+    var nm=parts[parts.length-1]||s;
+    nm=nm.split('?')[0].split('#')[0];
+    try{nm=decodeURIComponent(nm);}catch(e){}
+    return {name:nm||s, path:s};
+  }
+  function renderDlgRecent(){
+    var host=$('#odlg-recent'); if(!host) return;
+    host.innerHTML='';
+    var rec=(APP.project&&APP.project.recent)||[];
+    if(!rec.length){host.hidden=true;return;}
+    host.hidden=false;
+    var h=document.createElement('div');h.className='odlg-recent-h';
+    h.textContent='recent — reopen';host.appendChild(h);
+    rec.slice(0,12).forEach(function(p){
+      var sp=splitPath(p);
+      var b=document.createElement('button');b.className='odlg-r';
+      b.title='Reopen '+sp.path;
+      var nm=document.createElement('span');nm.className='odlg-r-nm';
+      nm.textContent=sp.name;b.appendChild(nm);
+      var pt=document.createElement('span');pt.className='odlg-r-p';
+      pt.textContent=sp.path;pt.dir='ltr';b.appendChild(pt);
+      b.addEventListener('click',function(){openPath(p);});
+      host.appendChild(b);
+    });
+  }
+  APP.noteRecent=function(p){
+    /* app mode: keep the client's recent list live as tabs open (the
+       server persists it too); web mode uses webNote */
+    if(!p||APP.mode!=='app') return;
+    var rec=(APP.project&&APP.project.recent)||[];
+    rec=[p].concat(rec.filter(function(r){return r!==p;})).slice(0,12);
+    APP.project.recent=rec;
+    renderRecent();
+  };
   function showDlg(){
     if(!dlg) return;
     dlg.hidden=false;
+    renderDlgRecent();
     var inp=$('#odlg-input'); if(inp) inp.value='';
     var up=$('#odlg-up'), fb=$('#odlg-files');
     if(APP.mode==='web'){
@@ -6465,6 +6558,11 @@ _SHELL_TEMPLATE = """<div class="shell nbshell" data-nb="{stem}"{path_attr}>
   </aside>
   <main class="stage">
     <div class="content">
+      <div class="docbar" hidden>
+        <span class="docbar-ic">&#128196;</span>
+        <span class="docbar-nm">{stem}</span>
+        <span class="docbar-p"></span>
+      </div>
       {sections}
     </div>
     <div class="rawview">
@@ -6594,6 +6692,7 @@ _TEMPLATE = """<!doctype html>
         files&#8230;</button>
       <button class="dbtn" id="odlg-close" title="Close">&#10005;</button>
     </div>
+    <div class="odlg-recent" id="odlg-recent" hidden></div>
     <div class="odlg-list" id="odlg-list"></div>
     <div class="odlg-foot">
       <div class="odlg-inrow">
@@ -7270,6 +7369,7 @@ def _self_test() -> None:
     assert 'id="menubtn"' in out and "tocshow" in out
     assert 'id="dc-resize"' in out and "--dc-w" in out
     assert 'id="dc-save"' in out
+    assert 'class="docbar"' in out and 'class="docbar-p"' in out
     assert "body:not(.light) .card" in out
     assert 'id="refresh-btn"' not in out
 
