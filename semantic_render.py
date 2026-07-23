@@ -3435,15 +3435,10 @@ _DECK_HTML = """
           title="Close the builder, back to the documents (Esc)">&#10005;
           Close</button>
       </div>
-      <div class="dc-block">
-        <span class="dc-label">Presentation</span>
-        <div class="dc-presname" id="pres-current"
-          title="Click to rename"></div>
+      <div class="dc-block dc-controls">
+        <div class="dc-presname" id="pres-current" hidden></div>
         <input id="pres-name" type="text" placeholder="presentation name"
           spellcheck="false" autocomplete="off" hidden>
-      </div>
-      <div class="dc-block">
-        <span class="dc-label">Slide layout</span>
         <div class="dc-row" id="layout-row">
           <button class="dbtn lay" data-lay="full" title="One pane">
             <span class="layico full"><i></i></span></button>
@@ -3464,21 +3459,17 @@ _DECK_HTML = """
             title="Blank canvas — build it with the slide editor">
             <span class="layico blank"></span></button>
         </div>
-        <div class="pane-editor" id="pane-editor"></div>
         <div class="title-editor" id="title-editor" hidden>
           <input id="ts-title" type="text" placeholder="Slide title"
             spellcheck="false" autocomplete="off">
           <input id="ts-sub" type="text" placeholder="Subtitle (optional)"
             spellcheck="false" autocomplete="off">
         </div>
-        <p class="dc-hint" id="dc-hint">Pick a pane, then click a card in
-        the document to place it there.</p>
         <button class="dbtn" id="dc-edit"
           title="Open this slide full-screen; add text, arrows and boxes">
           &#9998; Edit slide</button>
       </div>
       <div class="dc-block dc-film">
-        <span class="dc-label">Slides</span>
         <div class="film-list" id="film-list"></div>
         <button class="dbtn addslide" id="film-add">+ Add slide</button>
       </div>
@@ -3910,15 +3901,16 @@ body.creating-docs .card:hover{outline:2px solid var(--cyan);
 .dc-label{display:block;font-family:var(--mono);font-size:9.5px;
   letter-spacing:.16em;text-transform:uppercase;color:#7e93a4;
   margin-bottom:8px;}
-.dc-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px;}
+.dc-row{display:flex;gap:6px;flex-wrap:wrap;}
 .dc-hint{font-size:11.5px;color:#7e93a4;line-height:1.5;margin:9px 0 0;}
 .dc-spring{flex:1;}
-.dc-presname{font-size:13px;font-weight:600;color:#dce6ee;padding:2px 1px;
-  cursor:text;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.dc-presname:hover{color:#fff;text-decoration:underline dotted #39a9c088;}
+/* the presentation name lives on the left rail — no need to repeat it
+   in the builder; keep the element for the File > Rename flow only */
+#pres-current{display:none;}
+.dc-controls{display:flex;flex-direction:column;gap:9px;}
 #pres-name{width:100%;background:#16273a;border:1px solid #ffffff22;
   color:#dce6ee;font-family:var(--sans);font-size:12.5px;padding:7px 9px;
-  border-radius:6px;margin-top:7px;box-sizing:border-box;}
+  border-radius:6px;box-sizing:border-box;}
 #pres-name:focus{outline:none;border-color:var(--cyan);}
 .dbtn.lay[aria-pressed="true"]{background:var(--cyan-deep);
   border-color:var(--cyan-deep);color:#fff;}
@@ -3940,14 +3932,14 @@ body.creating-docs .card:hover{outline:2px solid var(--cyan);
   border-radius:3px;}
 .dbtn.lay[aria-pressed="true"] .layico.blank{border-color:#fff;}
 /* title-slide text inputs */
-.title-editor{display:flex;flex-direction:column;gap:7px;margin-top:9px;}
+.title-editor{display:flex;flex-direction:column;gap:7px;}
 .title-editor[hidden]{display:none;}
 .title-editor input{background:#16273a;border:1px solid #ffffff22;
   color:#dce6ee;font-family:var(--sans);font-size:12.5px;padding:8px 9px;
   border-radius:6px;}
 .title-editor input:focus{outline:none;border-color:var(--cyan);}
 .pane-editor[hidden]{display:none;}
-#dc-edit{margin-top:9px;width:100%;}
+#dc-edit{width:100%;}
 /* freeform slot editor + film thumbnails: boxes at frame positions */
 .pane-editor.freeform{display:block;position:relative;}
 .pane-editor.freeform .pane.slot{position:absolute;padding:4px 16px
@@ -4132,11 +4124,11 @@ body.picking .card{cursor:copy;}
 body.picking .card:hover{outline:2px solid #fff;outline-offset:2px;}
 
 /* pane editor: the current slide as clickable regions */
-/* the placement preview is a thumbnail, not the main event — cap it so
-   it can't grow tall on a wide/resized panel and squeeze the slide list */
+/* the current slide's interactive editor — the single big view in the
+   merged slides list (fills the width; drag the panel edge to resize) */
 .pane-editor{aspect-ratio:16/9;display:grid;gap:6px;background:#0b141d;
   border:1px solid #ffffff22;border-radius:8px;padding:6px;
-  margin:8px auto 0;width:100%;max-width:300px;}
+  margin:0;width:100%;}
 .pane-editor.full{grid-template-columns:1fr;grid-template-rows:1fr;}
 .pane-editor.halves{grid-template-columns:1fr 1fr;grid-template-rows:1fr;}
 .pane-editor.quarters{grid-template-columns:1fr 1fr;
@@ -4161,7 +4153,8 @@ body.picking .card:hover{outline:2px solid #fff;outline-offset:2px;}
   padding:0 4px;}
 .film-row{display:flex;align-items:center;gap:4px;border-radius:7px;
   margin-bottom:3px;cursor:grab;}
-.film-row.current{background:#39a9c01c;outline:1px solid #39a9c055;}
+.film-row.current{background:#39a9c01c;outline:1px solid #39a9c055;
+  align-items:flex-start;}
 .film-row.dragging{opacity:.45;}
 .film-row.drop-above{box-shadow:0 -2px 0 var(--cyan);}
 .film-row.drop-below{box-shadow:0 2px 0 var(--cyan);}
@@ -4172,7 +4165,14 @@ body.picking .card:hover{outline:2px solid #fff;outline-offset:2px;}
   white-space:nowrap;}
 .film-label .film-n{font-family:var(--mono);font-size:9.5px;color:#6c8093;
   width:15px;flex:none;text-align:right;}
-.mini-diagram{width:92px;height:52px;flex:none;display:grid;gap:2px;
+/* the selected slide expands: number on top, big editor, title below */
+.film-row.current .film-label{flex-direction:column;align-items:stretch;
+  gap:6px;cursor:default;}
+.film-row.current .film-n{align-self:flex-start;text-align:left;
+  color:var(--cyan);}
+.film-view{width:100%;min-width:0;}
+.film-view .pane-editor{width:100%;margin:0;}
+.mini-diagram{width:116px;height:66px;flex:none;display:grid;gap:2px;
   background:#0b141d;border:1px solid #ffffff22;border-radius:4px;
   padding:2px;}
 .mini-diagram.full{grid-template-columns:1fr;}
@@ -4655,10 +4655,6 @@ _DECK_JS = r"""
     var multi=visGroups.length>1;
     var v=document.createElement('div');v.className='vtrace';
     var tl=document.createElement('div');tl.className='vo-title';
-    var ts=document.createElement('span');
-    ts.textContent='code trace — click a step to expand, '
-      +'the eye to hide it while presenting';
-    tl.appendChild(ts);
     var xa=document.createElement('button');xa.className='vo-xall';
     xa.textContent='Expand all';
     xa.title='Open the code of every step';
@@ -4891,7 +4887,7 @@ _DECK_JS = r"""
             function(v){
               if(which==='t') s.title=v.trim();
               else s.sub=v.trim();
-              renderFilm();renderPaneEditor();
+              renderFilm();renderControls();
             },which);
         }
         d.appendChild(tx);
@@ -5820,7 +5816,7 @@ _DECK_JS = r"""
       inp.value=pres.name;
     renderPresTabs();
   }
-  function renderLayoutRow(){
+  function renderControls(){
     var s=pres.slides[cur];
     $$('#layout-row .lay').forEach(function(b){
       /* layouts are arrangement COMMANDS now; only the title slide is
@@ -5829,11 +5825,7 @@ _DECK_JS = r"""
         (!!s&&s.layout==='title'&&b.dataset.lay==='title').toString());
       b.disabled=!s;
     });
-  }
-  function renderPaneEditor(){
-    var ed=$('#pane-editor');ed.innerHTML='';
-    var s=pres.slides[cur];
-    var te=$('#title-editor'), hint=$('#dc-hint'), eb=$('#dc-edit');
+    var te=$('#title-editor'), eb=$('#dc-edit');
     var isTitle=!!s&&s.layout==='title';
     if(te){
       te.hidden=!isTitle;
@@ -5843,29 +5835,28 @@ _DECK_JS = r"""
         if(su&&document.activeElement!==su) su.value=s.sub||'';
       }
     }
-    if(hint) hint.textContent=isTitle
-      ?'Type the slide text (or edit it right on the slide in ✎ Edit).'
-      :'Every box is a frame: pick one, then click a card in the '
-        +'document. ✎ Edit slide moves and resizes them.';
     if(eb){
       eb.disabled=!s||mode==='edit';
       eb.innerHTML=(mode==='edit')
         ?'&#10003; Editing this slide':'&#9998; Edit slide';
     }
-    ed.hidden=isTitle;
-    ed.className='pane-editor freeform';
-    if(isTitle) return;
+  }
+  /* the current slide's interactive frame editor — embedded inline as
+     the big view in the merged slides list (one view, not two) */
+  function buildSlideEditor(s){
+    var ed=document.createElement('div');
+    ed.className='pane-editor freeform';ed.id='pane-editor';
     if(!s){
       ed.innerHTML='<div class="pane empty">'
         +'<span class="pane-t">no slide</span></div>';
-      return;
+      return ed;
     }
     var cells=slideCells(s);
     if(!cells.length){
-      ed.innerHTML='<div class="pane empty">'
-        +'<span class="pane-t">no frames — pick a layout, or just '
-        +'click a card</span></div>';
-      return;
+      ed.innerHTML='<div class="pane empty"><span class="pane-t">'
+        +'pick a layout above, or click a card in the document'
+        +'</span></div>';
+      return ed;
     }
     cells.forEach(function(pair){
       var a=pair.a, ai=pair.i;
@@ -5896,9 +5887,11 @@ _DECK_JS = r"""
           a.ref=null;activePane=ai;markDirty();refresh();});
         p.appendChild(x);
       }
-      p.addEventListener('click',function(){activePane=ai;refresh();});
+      p.addEventListener('click',function(e){
+        e.stopPropagation();activePane=ai;refresh();});
       ed.appendChild(p);
     });
+    return ed;
   }
   function paneImgSrc(ref){
     var card=ref?cardEl(ref):null;
@@ -5982,13 +5975,20 @@ _DECK_JS = r"""
         row.classList.remove('dragging');
         clearFilmMarks();
       });
-      var lbl=document.createElement('button');lbl.className='film-label';
+      var lbl=document.createElement('div');lbl.className='film-label';
       var num=document.createElement('span');num.className='film-n';
       num.textContent=(i+1);lbl.appendChild(num);
-      lbl.appendChild(miniDiagram(s));
+      if(i===cur&&s.layout!=='title'){
+        /* the selected slide IS the big interactive editor */
+        var view=document.createElement('div');view.className='film-view';
+        view.appendChild(buildSlideEditor(s));
+        lbl.appendChild(view);
+      } else {
+        lbl.appendChild(miniDiagram(s));
+      }
       var tt=document.createElement('span');tt.className='film-t';
       tt.textContent=slideTitle(s);lbl.appendChild(tt);
-      lbl.addEventListener('click',function(){
+      if(i!==cur) lbl.addEventListener('click',function(){
         cur=i;activePane=firstEmpty(s);refresh();});
       row.appendChild(lbl);
       var ctr=document.createElement('span');ctr.className='film-ctr';
@@ -6052,7 +6052,7 @@ _DECK_JS = r"""
     });
   })();
   function renderCreate(){
-    renderPresRow();renderLayoutRow();renderPaneEditor();renderFilm();
+    renderPresRow();renderControls();renderFilm();
   }
   function moveSlide(i,d){
     var j=i+d; if(j<0||j>=pres.slides.length) return;
@@ -7394,7 +7394,10 @@ def _self_test() -> None:
     assert 'id="presstrip"' in out and 'id="tv-markup"' in out
     assert 'id="pr-docs"' in out and 'id="pr-new"' in out
     assert 'id="deck-docs"' in out and 'id="dc-close"' in out
-    assert 'id="dc-play"' in out and 'id="pane-editor"' in out
+    assert 'id="dc-play"' in out and 'id="film-list"' in out
+    assert 'id="layout-row"' in out and "buildSlideEditor" in out
+    # decluttered builder: no repeated name label, no verbose hints
+    assert "dc-controls" in out
     assert 'data-anchor="clim"' in out and 'data-anchor="cell:md1"' in out
     assert '"stem": "demo"' in out or '"stem":"demo"' in out
     # markdown notes: bullets + bold survive, math left for MathJax
