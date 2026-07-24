@@ -914,11 +914,11 @@ def parse_notebook(nb: dict, title: str | None = None) -> Document:
     plot_n = 0
     for s in doc.sections:
         for it in s.items:
-            if it.kind in ("figure", "diagnostic"):
+            if (it.kind in ("figure", "diagnostic")
+                    and (it.title_echo or not it.title.strip())):
                 plot_n += 1
-                if it.title_echo or not it.title.strip():
-                    it.title = f"Plot {plot_n}"
-                    it.title_echo = False
+                it.title = f"Plot {plot_n}"
+                it.title_echo = False
     _build_chains(doc)
     doc.raw_html = render_raw(nb)
     return doc
@@ -2109,25 +2109,52 @@ are saved) &mdash; nothing is re-run here.</li>
 re-reads it after you re-run it in Jupyter, <b>&#10005;</b> closes.</li>
 </ul>
 
-<h3>Reading a notebook</h3>
+<h3>Filtering what you see</h3>
+<p>Four buttons in the top bar &mdash; <b>Markdown</b>, <b>Code</b>,
+<b>Plots</b>, <b>Output</b> &mdash; each shows its CURRENT state and
+cycles when clicked. They apply to every tab at once.</p>
 <ul>
-<li>The <b>Figures</b> / <b>Markup</b> / <b>Code</b> buttons (top bar)
-show the CURRENT state and cycle when clicked. Code has three states:
-<i>Visible</i> (code expanded), <i>Collapsed</i> (code folded away but
-the cards stay), and <i>Hidden</i> (code cards removed from the page and
-the sidebar). They apply to every tab at once.</li>
-<li><b>Raw notebook</b> flips the current tab to the notebook exactly
-as authored &mdash; cells in order, directives visible &mdash; so you
-can always see where a title or caption came from.</li>
-<li>The left sidebar navigates sections (each collapses via its
-chevron); the <b>analysis graph</b> at its foot jumps to any node.
-The <b>eye</b> beside any cell &mdash; in the sidebar or on the card
-itself &mdash; hides just that cell; a cell hidden this way stays in the
-sidebar (dimmed) so its eye can bring it back.</li>
-<li><b>Show code</b> under a figure tells the whole story: every
-upstream cell (load &rarr; transform &rarr; plot) in execution order,
-traced automatically from the code's variables.</li>
+<li><b>Markdown</b>, <b>Code</b> and <b>Plots</b> cycle
+<i>Visible &rarr; Collapsed &rarr; Hidden</i>. <i>Collapsed</i> folds
+that part away behind a click-to-open toggle; <i>Hidden</i> removes it.
+<b>Output</b> (printed tables, values, text) is a simple
+Visible / Hidden.</li>
+<li><b>Code means the code in EVERY cell</b> &mdash; imports, prints,
+plotting, a bare expression &mdash; not just standalone code cells. So
+<i>Code: Collapsed</i> tucks the source away under every figure and
+result at once, and a cell that is <i>only</i> code disappears entirely
+when Code is Hidden.</li>
+<li><b>Code types</b> and <b>Output types</b> (the two
+<b>&#9662;</b> menus) are finer control: untick <i>imports</i>,
+<i>plotting</i>, <i>print</i>, <i>dataset</i>, <i>error</i>&hellip; to
+hide just those. Untick every code type and it is the same as hiding
+code.</li>
 </ul>
+
+<h3>The sidebar</h3>
+<ul>
+<li>A <b>key</b> at the top names every card type present; below it,
+sections you can collapse with their chevron, and a jump-to link for
+every cell.</li>
+<li>The <b>eye</b> beside any cell &mdash; in the sidebar or on the card
+itself &mdash; hides just that one cell; a cell hidden this way stays in
+the sidebar (dimmed) so its eye can bring it back.</li>
+<li>The <b>analysis graph</b> at the sidebar's foot jumps to any node
+that declared an <code>#| id:</code>.</li>
+</ul>
+
+<h3>Plot trace</h3>
+<p>Every figure has a <b>&#9903; Plot trace</b> button. It focuses the
+document down to just the cells that build that plot &mdash; its whole
+lineage, load &rarr; transform &rarr; plot &mdash; and opens a
+dependency graph. It is the same document view, just subset, so every
+filter and button still works; <b>Show full document</b> (or Esc)
+brings everything back.</p>
+
+<h3>Raw notebook</h3>
+<p><b>Raw notebook</b> flips the current tab to the notebook exactly as
+authored &mdash; cells in order, directives visible &mdash; so you can
+always see where a title or caption came from.</p>
 
 <h3>Make notebooks render better (optional)</h3>
 <p>Add <code>#|</code> directive lines to the top of a code cell; they
@@ -2192,6 +2219,21 @@ use &mdash; local file browsing, project files, session restore:
 <code>pip install</code> the repo and run <code>plotline</code>,
 or just download <code>semantic_render.py</code> and run
 <code>python semantic_render.py</code>.</p>
+
+<h3>Support this project &#9829;</h3>
+<p>PlotLine is free and open source, built and maintained in the open.
+If it saves you time, a <b>Support</b> contribution genuinely helps
+&mdash; and it funds where this is going:</p>
+<ul>
+<li>An <b>online, hosted PlotLine with accounts</b> (think Overleaf,
+but for notebook figures + talks): save your documents and
+presentations to the cloud, pick up on any device, and share a link
+with collaborators &mdash; instead of juggling JSON files.</li>
+<li>Keeping the local + in-browser versions <b>free forever</b>, with
+regular improvements.</li>
+</ul>
+<p>Use the <b>Support &#9829;</b> button (top bar) &mdash; it goes
+through Ko-fi. Thank you.</p>
 """
 
 # App chrome (controls bar + tab rows), welcome screen, open dialog,
@@ -2411,6 +2453,27 @@ body.creating-docs .apptop{
 .helpdlg{position:fixed;inset:0;z-index:135;background:#0a131b88;
   display:flex;align-items:center;justify-content:center;padding:24px;}
 .helpdlg[hidden]{display:none;}
+/* ---- guided tour: a spotlight + a tooltip that steps through the UI ---- */
+.tour{position:fixed;inset:0;z-index:400;}
+.tour[hidden]{display:none;}
+.tour-hole{position:fixed;border-radius:8px;pointer-events:none;
+  box-shadow:0 0 0 9999px rgba(4,8,12,.62);transition:left .25s,top .25s,
+  width .25s,height .25s;}
+.tour-hole.center{box-shadow:0 0 0 9999px rgba(4,8,12,.74);}
+.tour-tip{position:fixed;width:min(340px,88vw);background:#0f1c29;
+  border:1px solid #ffffff26;border-radius:12px;padding:15px 16px 12px;
+  box-shadow:0 18px 50px #000a;color:#dce6ee;transition:left .2s,top .2s;}
+.tour-tip-h{display:flex;align-items:baseline;gap:9px;margin-bottom:7px;}
+.tour-step{font-family:var(--mono);font-size:10px;color:#5fc3d8;flex:none;}
+.tour-title{font-size:15px;font-weight:600;color:#eef4f8;}
+.tour-text{font-size:13px;line-height:1.55;color:#b7c6d2;margin-bottom:13px;}
+.tour-btns{display:flex;align-items:center;gap:8px;}
+.tour-btns button{font-family:var(--sans);font-size:12px;border-radius:16px;
+  padding:5px 14px;cursor:pointer;border:1px solid #ffffff22;
+  background:#ffffff0d;color:#dce6ee;}
+.tour-btns button:hover{background:#ffffff18;}
+.tour-next{background:#39a9c026;border-color:#39a9c066;color:#bfeaf5;}
+.tour-skip{color:#8ba0b2;border-color:transparent;background:none;padding:5px 6px;}
 .help-box{width:min(760px,94vw);height:min(720px,90vh);
   background:var(--paper);border-radius:12px;display:flex;
   flex-direction:column;overflow:hidden;
@@ -3242,6 +3305,119 @@ _JS = r"""
   });
   document.addEventListener('mousedown',hideTip,true);
   document.addEventListener('scroll',hideTip,true);
+
+  /* ---- guided tour: a spotlight + tooltip that steps through the UI;
+     skippable, shown once, or re-run from "Take a tour" ---- */
+  var TOUR_STEPS=[
+    {title:'Welcome to PlotLine',
+     text:'A figure-first view of your notebooks, plus a presentation '
+       +'builder. Here is a quick tour — skip it anytime.'},
+    {sel:'#tabstrip',title:'Notebooks are tabs',
+     text:'Every notebook you open is a tab. Drop .ipynb files anywhere on '
+       +'the window, or use + Open.'},
+    {sel:'#tv-code',title:'Filter what you see',
+     text:'Markdown, Code, Plots and Output each cycle Visible → '
+       +'Collapsed → Hidden. Code folds the source in EVERY cell at once.'},
+    {sel:'#ot-filter-btn',title:'Fine-tune by type',
+     text:'The Code types and Output types menus hide specific kinds — '
+       +'imports, plotting, print, dataset, error…'},
+    {sel:'.rail .nav',title:'The sidebar',
+     text:'A key at the top, collapsible sections, and an eye beside every '
+       +'cell to hide just that one (it stays here so you can bring it back).'},
+    {sel:'.plot-trace-btn',title:'Trace a plot',
+     text:'Plot trace focuses the document down to the cells that build a '
+       +'plot — its whole lineage — plus a dependency graph.'},
+    {sel:'#pr-docs,.presrail,#presrail',title:'Build presentations',
+     text:'The left rail holds presentations. Lay out slides, drop in cards '
+       +'from any open notebook, and present full screen.'},
+    {sel:'#help-btn',title:'Help & support',
+     text:'Full docs live here. If PlotLine helps you, Support funds a '
+       +'hosted version with accounts — thank you!'}
+  ];
+  var tourI=0;
+  function tourRect(step){
+    if(!step.sel) return null;
+    var el=$(step.sel);
+    if(!el||el.hidden||el.offsetParent===null) return null;
+    var r=el.getBoundingClientRect();
+    if(r.width===0&&r.height===0) return null;
+    return r;
+  }
+  function tourShow(i){
+    var steps=TOUR_STEPS,dir=(i>=tourI)?1:-1;
+    while(i>=0&&i<steps.length){
+      if(!steps[i].sel||tourRect(steps[i])) break;
+      i+=dir;
+    }
+    if(i>=steps.length){tourEnd();return;}
+    if(i<0) i=0;
+    tourI=i;
+    var step=steps[i],tour=$('#tour'),hole=$('#tour-hole'),tip=$('#tour-tip');
+    if(!tour) return;
+    tour.hidden=false;
+    $('#tour-step').textContent=(i+1)+' / '+steps.length;
+    $('#tour-title').textContent=step.title;
+    $('#tour-text').textContent=step.text;
+    var back=$('#tour-back'),next=$('#tour-next');
+    if(back) back.style.visibility=i>0?'visible':'hidden';
+    if(next) next.textContent=(i===steps.length-1)?'Done':'Next';
+    var r=tourRect(step);
+    var tw=Math.min(340,window.innerWidth*0.88),th=tip.offsetHeight||170;
+    if(r){
+      var pad=6;
+      hole.classList.remove('center');
+      hole.style.left=(r.left-pad)+'px';hole.style.top=(r.top-pad)+'px';
+      hole.style.width=(r.width+pad*2)+'px';
+      hole.style.height=(r.height+pad*2)+'px';
+      var top=(r.bottom+th+16<window.innerHeight)?r.bottom+12
+        :(r.top-th-16>0)?r.top-th-12:Math.max(12,(window.innerHeight-th)/2);
+      var left=Math.min(Math.max(12,r.left),window.innerWidth-tw-12);
+      tip.style.left=left+'px';tip.style.top=top+'px';tip.style.transform='none';
+    } else {
+      hole.classList.add('center');
+      hole.style.left='50%';hole.style.top='50%';
+      hole.style.width='0px';hole.style.height='0px';
+      tip.style.left='50%';tip.style.top='50%';
+      tip.style.transform='translate(-50%,-50%)';
+    }
+  }
+  function tourStart(){
+    var hd=$('#helpdlg'); if(hd) hd.hidden=true;
+    var wl=$('#welcome'); /* keep welcome as the backdrop is fine */
+    tourI=0;tourShow(0);
+  }
+  function tourEnd(){
+    var t=$('#tour'); if(t) t.hidden=true;
+    try{localStorage.setItem('plotline-tour','1');}catch(e){}
+  }
+  (function(){
+    var nx=$('#tour-next'),bk=$('#tour-back'),sk=$('#tour-skip');
+    if(nx) nx.addEventListener('click',function(){
+      if(tourI>=TOUR_STEPS.length-1) tourEnd(); else tourShow(tourI+1);});
+    if(bk) bk.addEventListener('click',function(){tourShow(tourI-1);});
+    if(sk) sk.addEventListener('click',tourEnd);
+    document.addEventListener('keydown',function(e){
+      var t=$('#tour'); if(!t||t.hidden) return;
+      if(e.key==='Escape'){e.preventDefault();tourEnd();}
+      else if(e.key==='ArrowRight'||e.key==='Enter'){e.preventDefault();
+        if(tourI>=TOUR_STEPS.length-1) tourEnd(); else tourShow(tourI+1);}
+      else if(e.key==='ArrowLeft'){e.preventDefault();tourShow(tourI-1);}
+    });
+    window.addEventListener('resize',function(){
+      var t=$('#tour'); if(t&&!t.hidden) tourShow(tourI);});
+    var wt=$('#welcome-tour');
+    if(wt) wt.addEventListener('click',function(e){e.preventDefault();tourStart();});
+    var ht=$('#help-tour');
+    if(ht) ht.addEventListener('click',function(e){e.preventDefault();tourStart();});
+  })();
+  function maybeAutoTour(){
+    try{if(localStorage.getItem('plotline-tour')) return;}catch(e){}
+    if(!APP.order.length) return;       /* wait until there is content to tour */
+    try{localStorage.setItem('plotline-tour','1');}catch(e){}
+    setTimeout(function(){if($('#tour')) tourStart();},700);
+  }
+  APP.startTour=tourStart;
+  document.addEventListener('sem:activate',maybeAutoTour);
 
   /* ---- figure pager: ‹ › flips between figures of one cell -------- */
   /* delegated so it works in cloned slide frames too */
@@ -4316,6 +4492,18 @@ body.deck-open{overflow:hidden;}
   text-transform:none;background:#ffffff0a;border:1px solid #ffffff22;
   color:#cdd9e3;border-radius:5px;padding:3px 9px;cursor:pointer;}
 .vo-xall:hover{border-color:var(--cyan);color:#fff;}
+/* the trail's Code-types / Output-types filter dropdowns */
+.vo-fdrop{position:relative;display:inline-block;}
+.vo-fmenu{position:absolute;top:calc(100% + 5px);left:0;z-index:40;
+  background:#16273a;border:1px solid #ffffff22;border-radius:8px;padding:5px;
+  min-width:150px;display:flex;flex-direction:column;text-align:left;
+  box-shadow:0 12px 34px #00000077;}
+.vo-fmenu[hidden]{display:none;}
+.vo-fmenu .ckf-row{display:flex;align-items:center;gap:8px;padding:5px 8px;
+  border-radius:5px;cursor:pointer;color:#dce6ee;font-size:12px;
+  font-family:var(--sans);text-transform:none;letter-spacing:0;}
+.vo-fmenu .ckf-row:hover{background:#39a9c022;}
+.vo-step.vo-filtered{display:none;}
 .vo-plots{flex:none;display:flex;gap:16px;justify-content:center;
   flex-wrap:wrap;}
 .vo-plot{display:flex;flex-direction:column;align-items:center;gap:6px;
@@ -5608,6 +5796,8 @@ _DECK_JS = r"""
     var box=document.createElement('div');
     box.className='vo-step'+(isHidden?' hidden':'');
     box.setAttribute('data-ns',st.ns);
+    box.setAttribute('data-ck',(st.codeKinds&&st.codeKinds[0])||'code');
+    box.setAttribute('data-ot',stepOt(st));
     var h=document.createElement('button');h.className='vo-step-h';
     h.title='Expand this cell';
     var n=document.createElement('span');n.className='vo-num';
@@ -5666,6 +5856,48 @@ _DECK_JS = r"""
       else box.classList.remove('open');
     });
   }
+  /* the code trail's OWN Code-types / Output-types filters (mirror the docs
+     ones): each hides trace steps by their primary code kind / output kind */
+  var traceCkHidden={},traceOtHidden={};
+  function stepOt(st){
+    var kd=st.kind;
+    if(kd==='text'||kd==='metric') return 'print';
+    if(kd==='dataset') return 'dataset';
+    if(kd==='error') return 'error';
+    return '';   /* figures / code / notes are not an output kind */
+  }
+  function applyTraceFilter(v){
+    $$('.vo-step',v).forEach(function(st){
+      var ck=st.getAttribute('data-ck')||'code',ot=st.getAttribute('data-ot');
+      st.classList.toggle('vo-filtered',
+        !!traceCkHidden[ck]||(!!ot&&!!traceOtHidden[ot]));
+    });
+  }
+  function traceFilterDropdown(kind,present,state,v){
+    var wrap=document.createElement('span');wrap.className='vo-fdrop';
+    var btn=document.createElement('button');
+    btn.className='vo-xall'+(Object.keys(state).length?' on':'');
+    btn.textContent=(kind==='code'?'Code types':'Output types')+' ▾';
+    var menu=document.createElement('div');menu.className='vo-fmenu';
+    menu.hidden=true;
+    present.forEach(function(t){
+      var row=document.createElement('label');row.className='ckf-row';
+      var cb=document.createElement('input');cb.type='checkbox';
+      cb.checked=!state[t];
+      cb.addEventListener('change',function(){
+        if(cb.checked) delete state[t]; else state[t]=1;
+        btn.classList.toggle('on',Object.keys(state).length>0);
+        applyTraceFilter(v);});
+      var sw=document.createElement('span');
+      sw.className='ckf-dot '+(kind==='code'?'ckmain-'+t:'ot-sw-'+t);
+      var tx=document.createElement('span');tx.textContent=t;
+      row.appendChild(cb);row.appendChild(sw);row.appendChild(tx);
+      menu.appendChild(row);});
+    btn.addEventListener('click',function(e){
+      e.stopPropagation();menu.hidden=!menu.hidden;});
+    wrap.appendChild(btn);wrap.appendChild(menu);
+    return wrap;
+  }
   function traceNode(spec,rebuild){
     var groups=spec.groups||[];
     var hidden=hiddenSet({hidden:spec.list()});
@@ -5706,6 +5938,16 @@ _DECK_JS = r"""
         spec.showHiddenRef.v=!spec.showHiddenRef.v;doRebuild();});
       tl.appendChild(sh);
     }
+    /* the trail's own Code-types / Output-types filters (present kinds only) */
+    var ckSet={},otSet={};
+    groups.forEach(function(g){g.steps.forEach(function(st){
+      ckSet[(st.codeKinds&&st.codeKinds[0])||'code']=1;
+      var ot=stepOt(st); if(ot) otSet[ot]=1;});});
+    var ckList=Object.keys(ckSet),otList=Object.keys(otSet);
+    if(ckList.length)
+      tl.appendChild(traceFilterDropdown('code',ckList,traceCkHidden,v));
+    if(otList.length)
+      tl.appendChild(traceFilterDropdown('output',otList,traceOtHidden,v));
     v.appendChild(tl);
     if(multi){
       var strip=document.createElement('div');strip.className='vo-plots';
@@ -5750,6 +5992,7 @@ _DECK_JS = r"""
       cols.appendChild(col);
     });
     v.appendChild(cols);
+    applyTraceFilter(v);   /* reflect the current trail filters on rebuild */
     return v;
   }
   function updateVNav(){
@@ -7373,6 +7616,12 @@ _DECK_JS = r"""
       window.SemApp.focusTrace(it.nb,list,it.title||'Plot trace',graph);
     }
   };
+  /* close any open code-trail filter menu on an outside click */
+  document.addEventListener('click',function(e){
+    $$('.vo-fmenu').forEach(function(m){
+      if(!m.hidden&&m.parentNode&&!m.parentNode.contains(e.target))
+        m.hidden=true;});
+  });
   /* ---- "Notebooks" popover in the deck header ---- */
   var nbsBtn=$('#dc-nbs-btn'),nbsMenu=$('#dc-nbs-menu');
   if(nbsBtn) nbsBtn.addEventListener('click',function(e){
@@ -7946,7 +8195,9 @@ _TEMPLATE = """<!doctype html>
       title="Switch between dark and light theme">&#9788;</button>
     <a class="toggle appbar-link" id="support-btn" href="{kofi}"
       target="_blank" rel="noopener"
-      title="Support PlotLine on Ko-fi">Support &#9829;</a>
+      title="Support PlotLine on Ko-fi — funds an online, hosted version with
+ accounts (save + share your docs and talks, like Overleaf)">Support
+ &#9829;</a>
     <button class="toggle" id="help-btn"
       title="How to use, and everything this tool can do">Help</button>
   </div>
@@ -7996,6 +8247,8 @@ _TEMPLATE = """<!doctype html>
         notebook</button>
     </div>
     <div class="welcome-links">
+      <a href="#" id="welcome-tour">Take a tour</a>
+      <span class="wl-sep">&middot;</span>
       <a href="#" id="welcome-help">How to use</a>
       <span class="wl-sep">&middot;</span>
       <a href="{repo}" target="_blank" rel="noopener">GitHub</a>
@@ -8011,12 +8264,30 @@ _TEMPLATE = """<!doctype html>
     <div class="help-head">
       <span class="help-title">How to use</span>
       <span class="deck-spring"></span>
+      <button class="dbtn" id="help-tour" title="Take the guided tour">&#9654;
+        Take a tour</button>
       <a class="help-gh" href="{repo}" target="_blank"
         rel="noopener">GitHub &#8599;</a>
       <button class="dbtn" id="help-close" title="Close">&#10005;</button>
     </div>
     <div class="help-body">
       {help_html}
+    </div>
+  </div>
+</div>
+<div class="tour" id="tour" hidden>
+  <div class="tour-hole" id="tour-hole"></div>
+  <div class="tour-tip" id="tour-tip">
+    <div class="tour-tip-h">
+      <span class="tour-step" id="tour-step"></span>
+      <span class="tour-title" id="tour-title"></span>
+    </div>
+    <div class="tour-text" id="tour-text"></div>
+    <div class="tour-btns">
+      <button class="tour-skip" id="tour-skip">Skip tour</button>
+      <span class="deck-spring"></span>
+      <button id="tour-back">Back</button>
+      <button class="tour-next" id="tour-next">Next</button>
     </div>
   </div>
 </div>
@@ -8675,7 +8946,8 @@ def _self_test() -> None:
     assert "function presentOtTypes" in out and ".ot-off{display:none" in out
     assert "ot-print" in out and 'cb-out" data-ot=' in out
     # the sidebar key sits at the TOP (before the first section row)
-    assert out.index('class="navkey"') < out.index('class="navsec-row"')
+    _nav = render_nav(doc)
+    assert "navkey" in _nav and _nav.index("navkey") < _nav.index("navsec-row")
     # a figure with no explicit name is auto-named "Plot N"
     pdoc = parse_notebook({"cells": [
         {"cell_type": "code", "source": "plt.plot(x)", "outputs": [
@@ -8872,6 +9144,16 @@ def _self_test() -> None:
     assert "window.SemTrace" in out and ".pg-node" in out
     assert 'id="focusbar-clear"' in out and "APP.focusTrace" in out
     assert "var focusStem" in out   # the focus set drives applyFilters
+    # the presentation code-trail has its OWN Code-types / Output-types filters
+    assert "function traceFilterDropdown" in out and ".vo-step.vo-filtered" in out
+    assert "var traceCkHidden" in out and "function applyTraceFilter" in out
+    # guided tour (skippable, shown once) + entry points
+    assert 'id="tour"' in out and "var TOUR_STEPS" in out
+    assert 'id="welcome-tour"' in out and 'id="help-tour"' in out
+    assert "function tourShow" in out and "plotline-tour" in out
+    # help content covers the new model + what Support funds
+    assert "Support this project" in out and "hosted" in _HELP_HTML
+    assert "Filtering what you see" in _HELP_HTML and "Plot trace" in _HELP_HTML
     # presentation "Notebooks" popover: open-all / refresh-all
     assert 'id="dc-nbs-btn"' in out and 'id="dc-nbs-menu"' in out
     assert "function renderNbsMenu" in out and "function openPresNbs" in out
