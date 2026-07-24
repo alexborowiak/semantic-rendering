@@ -2997,11 +2997,6 @@ body.light .dc-presname{color:var(--ink);}
 body.light #pres-name,body.light .title-editor input{
   background:#fff;border-color:var(--line);color:var(--ink);}
 body.light .dc-hint{color:var(--ink-3);}
-body.light .dc-nbs-l{color:var(--ink-3);}
-body.light .dc-nb{color:var(--cyan-deep);background:#39a9c012;
-  border-color:#39a9c033;}
-body.light .dc-nb.missing{color:#8a5a1e;background:#cf9a4e14;
-  border-color:#cf9a4e40;}
 body.light .dc-menu{background:#fff;border-color:var(--line);}
 body.light .dc-mi{color:var(--ink-2);}
 body.light .dc-mi:hover{background:#39a9c026;}
@@ -4783,8 +4778,6 @@ _DECK_HTML = """
       <div class="dc-resize" id="dc-resize"
         title="Drag to resize the builder panel"></div>
       <div class="dc-head">
-        <button class="dbtn primary" id="dc-play"
-          title="Play the presentation fullscreen">&#9654; Present</button>
         <div class="dc-menuwrap">
           <button class="dbtn" id="dc-file" aria-haspopup="true"
             aria-expanded="false">File &#9662;</button>
@@ -4804,19 +4797,9 @@ _DECK_HTML = """
             <button class="dc-mi" id="mi-del">Delete presentation</button>
           </div>
         </div>
-        <div class="dc-menuwrap">
-          <button class="dbtn" id="dc-nbs-btn" aria-haspopup="true"
-            aria-expanded="false"
-            title="Notebooks that went into this presentation">&#128218;
-            Notebooks</button>
-          <div class="dc-menu dc-nbs-menu" id="dc-nbs-menu" hidden></div>
-        </div>
         <button class="dbtn" id="dc-save">Save</button>
         <span class="dc-spring"></span>
         <span class="deck-status" id="deck-status"></span>
-        <button class="dbtn" id="dc-close"
-          title="Close the builder, back to the documents (Esc)">&#10005;
-          Close</button>
       </div>
       <div class="dc-block dc-controls">
         <div class="dc-presname" id="pres-current" hidden></div>
@@ -4851,7 +4834,6 @@ _DECK_HTML = """
         <button class="dbtn" id="dc-edit"
           title="Open this slide full-screen; add text, arrows and boxes">
           &#9998; Edit slide</button>
-        <div class="dc-nbs" id="dc-nbs" hidden></div>
       </div>
       <div class="dc-block dc-film">
         <div class="film-list" id="film-list"></div>
@@ -4860,7 +4842,9 @@ _DECK_HTML = """
     </aside>
     <div class="deck-stagewrap" id="deck-stagewrap">
       <div class="edit-tools" id="edit-tools" hidden>
-        <button class="dbtn et et-bigcell" data-tool="cell"
+        <button class="dbtn primary" id="dc-play"
+          title="Play the presentation fullscreen">&#9654; Present</button>
+        <button class="dbtn et" data-tool="cell"
           aria-pressed="false"
           title="Drop a notebook card onto the slide — you pick which one from
  your notebook">&#43; Notebook cell</button>
@@ -4878,6 +4862,21 @@ _DECK_HTML = """
             + Shapes &#9662;</button>
           <div class="sh-menu" id="sh-menu" hidden></div>
         </span>
+        <button class="dbtn" id="et-del" disabled
+          title="Delete the selected item (Del)">Delete</button>
+        <span class="et-hint" id="et-hint"></span>
+        <span class="deck-spring"></span>
+        <button class="dbtn viewtoggle" id="et-notebook"
+          title="Bring up your notebooks in the editor to scroll or pick
+ cells — the slide is right here when you switch back">&#9636;
+          Notebook view</button>
+        <div class="dc-menuwrap">
+          <button class="dbtn" id="dc-nbs-btn" aria-haspopup="true"
+            aria-expanded="false"
+            title="Notebooks that went into this presentation">&#128218;
+            Open notebooks</button>
+          <div class="dc-menu dc-nbs-menu" id="dc-nbs-menu" hidden></div>
+        </div>
         <span class="et-fmt" id="et-fmt" hidden>
           <span class="fmt-lab" id="fmt-txlab" hidden>T</span>
           <button class="sw" data-c="#ff6b57"
@@ -4947,15 +4946,6 @@ _DECK_HTML = """
             title="Swap in a different notebook card">&#8644;
             Replace</button>
         </span>
-        <span class="et-hint" id="et-hint"></span>
-        <span class="deck-spring"></span>
-        <button class="dbtn viewtoggle" id="et-notebook"
-          title="Switch to the notebook to scroll your cells — come back to the
- slide any time">&#9636; Notebook view</button>
-        <button class="dbtn" id="et-del" disabled
-          title="Delete the selected item (Del)">Delete</button>
-        <button class="dbtn primary" id="et-done"
-          title="Back to the builder (Esc)">Done</button>
       </div>
       <button class="deck-arrow prev" id="deck-prev"
         title="Previous slide (&#8592;)"
@@ -4991,8 +4981,6 @@ _DECK_HTML = """
   <span class="deck-spring"></span>
   <button class="dbtn" id="pick-cancel">Cancel (Esc)</button>
 </div>
-<button class="slide-return" id="slide-return" hidden
-  title="Back to editing your slide">&#9645; Back to slide</button>
 """
 
 _DECK_CSS = r"""
@@ -5420,17 +5408,7 @@ body.creating-docs .card:hover{outline:2px solid var(--cyan);
    in the builder; keep the element for the File > Rename flow only */
 #pres-current{display:none;}
 .dc-controls{display:flex;flex-direction:column;gap:9px;}
-/* which notebooks this presentation pulls cards from */
-.dc-nbs{display:flex;flex-wrap:wrap;align-items:center;gap:5px;}
-.dc-nbs[hidden]{display:none;}
-.dc-nbs-l{font-family:var(--mono);font-size:8.5px;letter-spacing:.14em;
-  text-transform:uppercase;color:#7e93a4;margin-right:2px;}
-.dc-nb{font-family:var(--mono);font-size:10px;color:#a9c4d3;
-  background:#39a9c018;border:1px solid #39a9c033;border-radius:20px;
-  padding:2px 9px;}
-.dc-nb.missing{color:#c9a06a;background:#cf9a4e18;
-  border-color:#cf9a4e40;}
-/* the "Notebooks" header popover: list + open-all / refresh-all */
+/* the "Notebooks" popover: list + open-all / refresh-all */
 .dc-nbs-menu{min-width:252px;max-width:330px;gap:1px;}
 .dc-nbs-menuh{font-family:var(--mono);font-size:8.5px;letter-spacing:.14em;
   text-transform:uppercase;color:#7e93a4;padding:6px 9px 5px;}
@@ -5522,14 +5500,10 @@ body.slide-editing .apptop{display:none;}
 .et-label{font-family:var(--mono);font-size:10px;letter-spacing:.18em;
   text-transform:uppercase;color:var(--amber);}
 .et-hint{font-size:11px;color:#7e93a4;}
-/* the prominent "+ Notebook cell" button — the main way to add content */
-.dbtn.et-bigcell{background:var(--cyan);border-color:var(--cyan);color:#fff;
-  font-weight:700;font-size:13px;padding:9px 16px;letter-spacing:.01em;
-  box-shadow:0 2px 10px #39a9c04d;}
-.dbtn.et-bigcell:hover{background:var(--cyan-deep);border-color:var(--cyan-deep);}
-.dbtn.et-bigcell[aria-pressed="true"]{background:var(--cyan-deep);
-  box-shadow:0 0 0 2px #bfeaf5 inset;}
 .et-div{width:1px;height:22px;background:#ffffff26;flex:none;margin:0 3px;}
+/* the Notebooks popover sits on the right of the tool bar, so it drops down
+   right-aligned to stay on-screen */
+#edit-tools .dc-nbs-menu{left:auto;right:0;}
 /* the "+ Shapes" dropdown */
 .sh-drop{position:relative;display:inline-block;}
 #sh-btn[aria-pressed="true"]{background:var(--cyan-deep);
@@ -5550,13 +5524,6 @@ body.slide-editing .apptop{display:none;}
 .dbtn.viewtoggle:hover{border-color:var(--cyan);color:#fff;
   background:#39a9c01e;}
 /* the floating "back to slide" toggle shown while scrolling the notebook */
-.slide-return{position:fixed;left:calc(var(--presrail-w) + 16px);bottom:20px;
-  z-index:130;font-family:var(--sans);font-size:13px;font-weight:600;
-  background:var(--cyan);border:1px solid var(--cyan);color:#fff;
-  border-radius:22px;padding:10px 18px;cursor:pointer;
-  box-shadow:0 8px 26px #0007;}
-.slide-return:hover{background:var(--cyan-deep);}
-.slide-return[hidden]{display:none;}
 /* SVG shapes fill their frame; the div carries no border/box for these */
 .an-rect.an-svgshape{border:none!important;border-radius:0;
   background:none!important;}
@@ -5706,9 +5673,14 @@ ul.an-ul li{margin:.18em 0;white-space:pre-wrap;}
   flex-direction:column;}
 .an-cell .figframe img{max-width:100%;max-height:100%;width:auto;
   height:auto;object-fit:contain;margin:0;}
-.an-cell .note{flex:1;min-height:0;overflow:auto;background:#f7fafc;
-  color:var(--ink-2);border-radius:6px;padding:10px 14px;
+.an-cell .note{flex:1;min-height:0;overflow:auto;
+  background:var(--nb-bg,#f7fafc);
+  color:var(--nb-tx,var(--ink-2));border-radius:6px;padding:10px 14px;
   font-size:13px;}
+/* a recoloured markdown card carries its text colour to every child
+   (headings, lists, bold) so the whole note reads in the chosen colour */
+.an-cell[style*="--nb-tx"] .note,
+.an-cell[style*="--nb-tx"] .note *{color:var(--nb-tx);}
 .an-cell .xr-wrap,.an-cell pre.result,.an-cell pre.stream{
   overflow:auto;min-height:0;}
 .an-cell.empty{align-items:center;justify-content:center;
@@ -6873,6 +6845,15 @@ _DECK_JS = r"""
     if(a.rot) tr+=(tr?' ':'')+'rotate('+a.rot+'deg)';
     if(tr) el.style.transform=tr;
   }
+  /* a markdown cell frame can carry its own text + background colour, so the
+     note is readable on any slide (the default light-box grey is not) */
+  function applyCellColor(el,a){
+    if(a.txcol) el.style.setProperty('--nb-tx',a.txcol);
+    else el.style.removeProperty('--nb-tx');
+    if(a.bgcol) el.style.setProperty('--nb-bg',
+      a.bgcol==='none'?'transparent':a.bgcol);
+    else el.style.removeProperty('--nb-bg');
+  }
   function mkHandle(){
     var h=document.createElement('span');h.className='an-handle';
     h.title='Drag to move';h.textContent='⠿';
@@ -7059,6 +7040,7 @@ _DECK_JS = r"""
             if(a.ts) b.style.zoom=a.ts;
             c.appendChild(b);
           }
+          applyCellColor(c,a);
           if((a.h||30)>=55){
             var card=cardEl(it.ns);
             var cap=card?card.querySelector('.caption'):null;
@@ -7167,18 +7149,19 @@ _DECK_JS = r"""
       if(on&&pressed!==undefined)
         el.setAttribute('aria-pressed',pressed.toString());
     }
-    $$('.sw:not(.swbg)',bar).forEach(function(sw){
-      sw.hidden=(kind==='cell');
-      sw.setAttribute('aria-pressed',
-        ((a.color||defaultColor(kind))===sw.dataset.c).toString());
-    });
-    var isText=(kind==='text');
-    var isNum=(typeof selAnnot==='number');
+    /* a markdown cell frame is text too — it gets the same colour controls */
     var cellText=false;
     if(kind==='cell'&&a.ref){
       var ci=resolveRef(a.ref);
       cellText=!!ci&&ci.kind!=='figure'&&ci.kind!=='diagnostic';
     }
+    $$('.sw:not(.swbg)',bar).forEach(function(sw){
+      sw.hidden=(kind==='cell'&&!cellText);
+      var cur_=(kind==='cell')?(a.txcol||''):(a.color||defaultColor(kind));
+      sw.setAttribute('aria-pressed',(cur_===sw.dataset.c).toString());
+    });
+    var isText=(kind==='text');
+    var isNum=(typeof selAnnot==='number');
     show('#fmt-smaller',isText||cellText);
     show('#fmt-bigger',isText||cellText);
     var fontSel=$('#fmt-font');
@@ -7203,11 +7186,14 @@ _DECK_JS = r"""
     show('#fmt-front',isNum&&kind!=='arrow');
     show('#fmt-back',isNum&&kind!=='arrow');
     var plainText=isText&&typeof selAnnot==='number';
-    show('#fmt-txlab',isText&&kind!=='cell');
-    show('#fmt-bglab',plainText);
+    var showBg=plainText||cellText;
+    show('#fmt-txlab',(isText&&kind!=='cell')||cellText);
+    show('#fmt-bglab',showBg);
     $$('.swbg',bar).forEach(function(sw){
-      sw.hidden=!plainText;
-      var cur_=(a.bg===0)?'none':(a.bgc||'#0e1926');
+      sw.hidden=!showBg;
+      var cur_=(kind==='cell')
+        ?(a.bgcol||'')
+        :((a.bg===0)?'none':(a.bgc||'#0e1926'));
       sw.setAttribute('aria-pressed',(cur_===sw.dataset.c).toString());
     });
     show('#fmt-replace',kind==='cell');
@@ -7486,9 +7472,12 @@ _DECK_JS = r"""
   },true);
 
   /* ---------- format bar wiring ---------- */
-  $$('#et-fmt .sw').forEach(function(sw){
+  $$('#et-fmt .sw:not(.swbg)').forEach(function(sw){
     sw.addEventListener('click',function(){
-      fmtApply(function(a){a.color=sw.dataset.c;});
+      fmtApply(function(a){
+        if(a.k==='cell') a.txcol=sw.dataset.c;
+        else a.color=sw.dataset.c;
+      });
     });
   });
   function onFmt(id,fn){
@@ -7511,7 +7500,8 @@ _DECK_JS = r"""
   $$('#et-fmt .swbg').forEach(function(sw){
     sw.addEventListener('click',function(){
       fmtApply(function(a){
-        if(sw.dataset.c==='none'){a.bg=0;}
+        if(a.k==='cell'){a.bgcol=sw.dataset.c;}
+        else if(sw.dataset.c==='none'){a.bg=0;}
         else{a.bg=1;a.bgc=sw.dataset.c;}
       });
     });
@@ -7961,6 +7951,7 @@ _DECK_JS = r"""
         frame.appendChild(ch);
         var b=framePart(it.ns,a.part);
         if(b){if(a.ts) b.style.zoom=a.ts;frame.appendChild(b);}
+        applyCellColor(frame,a);
         p.title=it.nb+' — '+it.title;
         p.appendChild(frame);
         var pc=buildPartChooser(s,ai);
@@ -8156,28 +8147,19 @@ _DECK_JS = r"""
     return order;
   }
   function renderPresNbs(){
-    var host=$('#dc-nbs'); if(!host) return;
-    host.innerHTML='';
     var nbs=presNbs(pres);
     var btn=$('#dc-nbs-btn');
     if(btn){
       /* only meaningful when the deck pulls from named notebooks (namespaced
          refs) — a static single-file export has none */
       btn.hidden=!nbs.length;
-      btn.textContent='📚 Notebooks ('+nbs.length+')';
+      /* "Open notebooks" until at least one of the deck's notebooks is open,
+         then "Refresh notebooks" (reload the latest cells from disk / URL) */
+      var anyOpen=nbs.some(function(stem){
+        return APP.order.indexOf(stem)>=0;});
+      btn.textContent=(anyOpen?'📚 Refresh notebooks'
+        :'📚 Open notebooks');
     }
-    if(!nbs.length){host.hidden=true;return;}
-    host.hidden=false;
-    var l=document.createElement('span');l.className='dc-nbs-l';
-    l.textContent='notebooks';host.appendChild(l);
-    nbs.forEach(function(stem){
-      var open=APP.order.indexOf(stem)>=0;
-      var c=document.createElement('span');
-      c.className='dc-nb'+(open?'':' missing');
-      c.textContent=stem;
-      c.title=open?stem+' — open':stem+' — not currently open';
-      host.appendChild(c);
-    });
   }
   /* ---- "notebooks in this presentation" popover: open all / refresh all ----
      stem -> path resolves from an open shell, else a recent path with the
@@ -8340,7 +8322,6 @@ _DECK_JS = r"""
   }
   function openDeck(m){
     deckEl.hidden=false;
-    var sr=$('#slide-return'); if(sr) sr.hidden=true;
     status();
     setUIMode(m||'view');
     routeSync();
@@ -8352,7 +8333,6 @@ _DECK_JS = r"""
     }catch(err){}
     closeVFull();
     deckEl.hidden=true;
-    var sr=$('#slide-return'); if(sr) sr.hidden=true;
     document.body.classList.remove('deck-open');
     document.body.classList.remove('creating-docs');
     document.body.classList.remove('slide-editing');
@@ -8386,7 +8366,6 @@ _DECK_JS = r"""
   };
   /* wrap so the click Event isn't forwarded (closeDeck takes no args) */
   $('#deck-docs').addEventListener('click',function(){closeDeck();});
-  $('#dc-close').addEventListener('click',function(){closeDeck();});
   var prDocs=document.getElementById('pr-docs');
   if(prDocs) prDocs.addEventListener('click',function(){closeDeck();});
   var prNew=document.getElementById('pr-new');
@@ -8402,14 +8381,18 @@ _DECK_JS = r"""
     setUIMode('create');});
   $('#deck-prev').addEventListener('click',function(){go(cur-1);});
   $('#deck-next').addEventListener('click',function(){go(cur+1);});
+  /* click the letterbox AROUND the slide to clear the selection (clicks on
+     the canvas itself are already handled by the annot-layer). Scoped to the
+     stage element only, so it never fights a fresh text/arrow placement. */
+  if(stage) stage.addEventListener('mousedown',function(ev){
+    if(mode!=='edit'||tool!=='select'||ev.target!==stage) return;
+    var l=stage.querySelector('.annot-layer');
+    if(l) selectAnnot(l,null);
+  });
   var editBtn=$('#dc-edit');
   if(editBtn) editBtn.addEventListener('click',function(){
     if(!pres.slides[cur]) return;
     setUIMode('edit');
-  });
-  var doneBtn=$('#et-done');
-  if(doneBtn) doneBtn.addEventListener('click',function(){
-    setUIMode('create');
   });
   var delBtn=$('#et-del');
   if(delBtn) delBtn.addEventListener('click',deleteSel);
@@ -8475,16 +8458,13 @@ _DECK_JS = r"""
         shMenu.hidden=true;shBtn.setAttribute('aria-expanded','false');}
     });
   })();
-  /* ---- slide view <-> notebook view ---- */
+  /* ---- slide view <-> notebook view ----
+     "Notebook view" brings the notebooks up inside the editor (create mode);
+     it never leaves the presentation. "Edit slide" takes you back. */
   var nbViewBtn=$('#et-notebook');
   if(nbViewBtn) nbViewBtn.addEventListener('click',function(){
-    closeDeck();
-    var sr=$('#slide-return');
-    if(sr){sr.hidden=false;
-      sr.textContent='▭ Back to '+(pres.name||'slide');}
+    setUIMode('create');
   });
-  var srBtn=$('#slide-return');
-  if(srBtn) srBtn.addEventListener('click',function(){openDeck('edit');});
   var downBtn=$('#deck-down');
   if(downBtn) downBtn.addEventListener('click',scrollToTrace);
   var upBtn=$('#deck-up');
@@ -9813,7 +9793,9 @@ def _self_test() -> None:
     assert 'class="nb-data"' in out and 'id="app-data"' in out
     assert 'id="presstrip"' in out and 'id="tv-markdown"' in out
     assert 'id="pr-docs"' in out and 'id="pr-new"' in out
-    assert 'id="deck-docs"' in out and 'id="dc-close"' in out
+    assert 'id="deck-docs"' in out
+    # the redundant builder "Close" is gone (presrail Documents handles it)
+    assert 'id="dc-close"' not in out
     assert 'id="dc-play"' in out and 'id="film-list"' in out
     assert 'id="layout-row"' in out and "buildSlideEditor" in out
     # decluttered builder: no repeated name label, no verbose hints
@@ -9845,8 +9827,10 @@ def _self_test() -> None:
     assert '"codeKinds"' in out and "ckmain-function" in out
     assert "body:not(.light) .ckmain-data .badge" in out
     assert "body.light .navitem.ckmain-data .dot" in out
-    # notebooks-in-presentation chips + advanced code-type filter
-    assert 'id="dc-nbs"' in out and "renderPresNbs" in out
+    # the Notebooks button (Open/Refresh) + advanced code-type filter; the
+    # old inline "notebooks" chip strip above the thumbnails is gone
+    assert 'id="dc-nbs-btn"' in out and "renderPresNbs" in out
+    assert 'class="dc-nbs"' not in out
     assert 'id="ck-filter-btn"' in out and 'id="ck-filter-menu"' in out
     # printed output (incl. a bare expression) reads "print"; markdown notes
     # read "markdown" (not "note"); "metric" is gone — a printed value IS print
@@ -10084,11 +10068,18 @@ def _self_test() -> None:
     assert "document.addEventListener('sem:shell'" in out
     # builder workflow: a presentation opens in the slide EDITOR by default
     assert out.count("openDeck('edit')") >= 2
-    # the prominent "+ Notebook cell" button, the "+ Shapes" dropdown, and the
-    # slide<->notebook view toggle
-    assert 'et-bigcell" data-tool="cell"' in out and "Notebook cell" in out
+    # the "+ Notebook cell" tool (now a plain tool, not a cyan bigcell), the
+    # "+ Shapes" dropdown, and Present relocated into the slide tool bar
+    assert 'data-tool="cell"' in out and "Notebook cell" in out
+    assert "et-bigcell" not in out
     assert 'id="sh-btn"' in out and 'id="sh-menu"' in out and "var SHAPE_LIST" in out
-    assert 'id="et-notebook"' in out and 'id="slide-return"' in out
+    # "Notebook view" now switches to create mode (never exits); "Done" and the
+    # floating "Back to slide" pill are gone
+    assert 'id="et-notebook"' in out
+    assert 'id="et-done"' not in out and 'id="slide-return"' not in out
+    # a markdown cell frame carries its own text + background colour
+    assert "function applyCellColor" in out and "--nb-tx" in out
+    assert "a.txcol=sw.dataset.c" in out and "a.bgcol=sw.dataset.c" in out
     # shapes render as SVG paths (star/cloud/…) or glyphs (!/?); box+ellipse CSS
     assert "var SHAPE_PATHS" in out and "function drawShapeSvg" in out
     assert ".an-rect.an-svgshape" in out and "an-shape-svg" in out
