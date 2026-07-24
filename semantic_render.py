@@ -244,7 +244,8 @@ def render_outputs(outputs: list[dict]) -> list[RenderedOutput]:
             text = _strip_ansi(_as_text(out.get("text", "")))
             if text.strip():
                 rendered.append(RenderedOutput(
-                    "text", f'<pre class="stream">{html.escape(text)}</pre>'))
+                    "text",
+                    f'<pre class="stream ot-print">{html.escape(text)}</pre>'))
         elif otype in ("execute_result", "display_data"):
             data = out.get("data", {})
             if "image/png" in data:
@@ -267,20 +268,23 @@ def render_outputs(outputs: list[dict]) -> list[RenderedOutput]:
                 if _looks_like_xarray(htmltext):
                     rendered.append(RenderedOutput(
                         "xarray",
-                        f'<div class="xr-wrap">{htmltext}</div>',
+                        f'<div class="xr-wrap ot-dataset">{htmltext}</div>',
                         has_xarray=True))
                 else:
                     rendered.append(RenderedOutput(
-                        "html", f'<div class="rich">{htmltext}</div>'))
+                        "html",
+                        f'<div class="rich ot-result">{htmltext}</div>'))
             elif "text/plain" in data:
                 text = _as_text(data["text/plain"])
                 if text.strip():
                     rendered.append(RenderedOutput(
-                        "text", f'<pre class="result">{html.escape(text)}</pre>'))
+                        "text",
+                        f'<pre class="result ot-print">{html.escape(text)}</pre>'))
         elif otype == "error":
             tb = _strip_ansi("\n".join(out.get("traceback", [])))
             rendered.append(RenderedOutput(
-                "error", f'<pre class="error">{html.escape(tb)}</pre>'))
+                "error",
+                f'<pre class="error ot-error">{html.escape(tb)}</pre>'))
     return rendered
 
 
@@ -827,7 +831,7 @@ def parse_notebook(nb: dict, title: str | None = None) -> Document:
                     sec = ensure_section()
                     nid = _slug("note", used_slugs)
                     sec.items.append(Item(
-                        kind="text", title=text if handled_heading else "Note",
+                        kind="note", title=text if handled_heading else "Note",
                         caption=rest, is_note=True, subsection=cur_subsection,
                         item_id=nid, anchor=md_anchor or nid))
             else:
@@ -835,7 +839,7 @@ def parse_notebook(nb: dict, title: str | None = None) -> Document:
                     sec = ensure_section()
                     nid = _slug("note", used_slugs)
                     sec.items.append(Item(
-                        kind="text", title="Note", caption=stripped,
+                        kind="note", title="Note", caption=stripped,
                         is_note=True, subsection=cur_subsection,
                         item_id=nid, anchor=md_anchor or nid))
             continue
@@ -905,6 +909,16 @@ def parse_notebook(nb: dict, title: str | None = None) -> Document:
             and not (it.node_id and it.node_id in consumed_ids)
         ]
     doc.sections = [s for s in doc.sections if s.items]
+    # name any unnamed plot "Plot 1", "Plot 2", … (a figure with no explicit
+    # title just echoes its first code line — give it a real name instead)
+    plot_n = 0
+    for s in doc.sections:
+        for it in s.items:
+            if it.kind in ("figure", "diagnostic"):
+                plot_n += 1
+                if it.title_echo or not it.title.strip():
+                    it.title = f"Plot {plot_n}"
+                    it.title_echo = False
     _build_chains(doc)
     doc.raw_html = render_raw(nb)
     return doc
@@ -1203,16 +1217,16 @@ def md_to_html(text: str) -> str:
 
 _BADGE = {
     "figure": "figure", "dataset": "dataset", "transform": "transform",
-    "diagnostic": "diagnostic", "metric": "metric", "text": "note",
-    "code": "code",
+    "diagnostic": "diagnostic", "metric": "metric", "text": "print",
+    "note": "note", "code": "code",
 }
 
 
 def _kind_class(kind: str) -> str:
     return {
         "figure": "k-figure", "diagnostic": "k-figure", "dataset": "k-dataset",
-        "transform": "k-transform", "metric": "k-metric", "text": "k-note",
-        "code": "k-code",
+        "transform": "k-transform", "metric": "k-metric", "text": "k-print",
+        "note": "k-note", "code": "k-code",
     }.get(kind, "k-code")
 
 
@@ -1257,22 +1271,28 @@ def render_item(item: Item) -> str:
             badge = " · ".join(item.code_kinds[:3])
             kclass += f" ckmain-{item.code_kind}"
             kclass += "".join(f" ck-{c}" for c in item.code_kinds)
-    # mixed outputs (e.g. a printed dataset THEN a plot): the figure is
-    # the face; everything else folds into an "also printed" disclosure
+    # a cell's output splits into a PLOT part (figures) and an OUTPUT part
+    # (printed results) so the Plots and Output filters can act on them
+    # independently of each other and of the cell's Code
     imgs = [o for o in item.outputs if o.has_image]
     others = [o for o in item.outputs if not o.has_image]
     fig_html = (_fig_pager(imgs) if len(imgs) > 1
                 else "".join(o.payload for o in imgs))
-    if imgs and others:
-        out_html = fig_html + (
-            '<details class="alsoprinted"><summary>also printed by '
-            'this cell</summary><div class="alsoinner">'
-            + "".join(o.payload for o in others)
-            + "</div></details>")
-    elif len(imgs) > 1:
-        out_html = fig_html
-    else:
-        out_html = "".join(o.payload for o in item.outputs)
+    cb_parts = []
+    if fig_html:
+        cb_parts.append(f'<div class="cb-part cb-fig">{fig_html}</div>')
+    if others:
+        _ot_map = {"text": "print", "xarray": "dataset",
+                   "html": "result", "error": "error"}
+        ot_types: list[str] = []
+        for o in others:
+            ot = _ot_map.get(o.kind, "print")
+            if ot not in ot_types:
+                ot_types.append(ot)
+        cb_parts.append(
+            f'<div class="cb-part cb-out" data-ot="{" ".join(ot_types)}">'
+            + "".join(o.payload for o in others) + "</div>")
+    out_html = "".join(cb_parts)
 
     # code: one or more labelled steps folded behind a single toggle
     code_block = ""
@@ -1373,6 +1393,29 @@ def render_item(item: Item) -> str:
 
 def render_nav(doc: Document) -> str:
     parts = ['<nav class="nav" aria-label="Analysis sections">']
+    # key: one entry per item kind (incl. code subtypes) that occurs — shown
+    # at the TOP of the sidebar
+    labels = {"k-figure": "figure", "k-dataset": "dataset",
+              "k-transform": "transform", "k-metric": "metric",
+              "k-note": "note", "k-print": "print", "k-code": "code",
+              "ckmain-imports": "imports", "ckmain-function": "function",
+              "ckmain-data": "data", "ckmain-constant": "constant",
+              "ckmain-settings": "settings", "ckmain-plotting": "plotting",
+              "ckmain-print": "print"}
+    seen: list[str] = []
+    for s in doc.sections:
+        for it in s.items:
+            kc = (f"ckmain-{it.code_kind}"
+                  if it.kind not in ("figure", "diagnostic")
+                  and it.code_kinds != ["code"] else _kind_class(it.kind))
+            if kc not in seen:
+                seen.append(kc)
+    if seen:
+        parts.append('<div class="navkey"><span class="navkey-h">key</span>')
+        for kc in seen:
+            parts.append(f'<span class="nk {kc}"><span class="dot"></span>'
+                         f'{labels.get(kc, kc)}</span>')
+        parts.append('</div>')
     for s in doc.sections:
         figs = sum(1 for it in s.items if it.kind in ("figure", "diagnostic"))
         parts.append(
@@ -1403,28 +1446,6 @@ def render_nav(doc: Document) -> str:
                 f'<span class="navitem-eye" role="button" tabindex="0" '
                 f'title="Hide or show this cell" '
                 f'aria-label="Hide or show this cell">&#128065;</span></a>')
-        parts.append('</div>')
-    # key: one entry per item kind (incl. code subtypes) that occurs here
-    labels = {"k-figure": "figure", "k-dataset": "dataset",
-              "k-transform": "transform", "k-metric": "metric",
-              "k-note": "note", "k-code": "code",
-              "ckmain-imports": "imports", "ckmain-function": "function",
-              "ckmain-data": "data", "ckmain-constant": "constant",
-              "ckmain-settings": "settings", "ckmain-plotting": "plotting",
-              "ckmain-print": "print"}
-    seen: list[str] = []
-    for s in doc.sections:
-        for it in s.items:
-            kc = (f"ckmain-{it.code_kind}"
-                  if it.kind not in ("figure", "diagnostic")
-                  and it.code_kinds != ["code"] else _kind_class(it.kind))
-            if kc not in seen:
-                seen.append(kc)
-    if seen:
-        parts.append('<div class="navkey"><span class="navkey-h">key</span>')
-        for kc in seen:
-            parts.append(f'<span class="nk {kc}"><span class="dot"></span>'
-                         f'{labels.get(kc, kc)}</span>')
         parts.append('</div>')
     parts.append('</nav>')
     return "".join(parts)
@@ -1818,24 +1839,38 @@ body:not(.light) .docbar-p{color:#8ba0b2;}
 .card.k-code::before{background:var(--paper-3);}
 .card.target-flash{border-color:var(--cyan);box-shadow:0 0 0 3px #39a9c033;}
 
-/* a card the Markdown / Code / Plots filter has set to COLLAPSED: only its
-   header shows; click the header to expand it in place, click again to fold */
+/* a markdown note the Markdown filter has COLLAPSED: only the header shows;
+   click the header to expand in place, click again to fold. The :not(.expanded)
+   guard means expanding simply reverts to the note's normal rules (so a
+   "Show raw HTML" note behaves correctly). */
 .card.collapsed{padding:9px 16px;}
-.card.collapsed>.cardbody,.card.collapsed>.codewrap,.card.collapsed>.caption,
-.card.collapsed>.prov,.card.collapsed>.note-src,.card.collapsed>.htmltoggle{
-  display:none;}
+.card.collapsed:not(.expanded)>.cardbody,
+.card.collapsed:not(.expanded)>.caption,
+.card.collapsed:not(.expanded)>.prov,
+.card.collapsed:not(.expanded)>.note-src,
+.card.collapsed:not(.expanded)>.htmltoggle{display:none;}
 .card.collapsed>.cardhead{margin-bottom:0;cursor:pointer;}
 .card.collapsed .cardtitle::before{content:"\25b8";margin-right:7px;
   color:var(--ink-3);display:inline-block;font-size:.85em;
   transition:transform .2s;}
 .card.collapsed.expanded .cardtitle::before{transform:rotate(90deg);}
-.card.collapsed .cardtitle.echo{display:block;font-size:13px;font-weight:500;
-  color:var(--ink-3);}
 .card.collapsed>.cardhead:hover .cardtitle{color:var(--ink);}
 .card.collapsed.expanded{padding:18px 18px 16px;}
 .card.collapsed.expanded>.cardhead{margin-bottom:12px;}
-.card.collapsed.expanded>.cardbody,.card.collapsed.expanded>.codewrap,
-.card.collapsed.expanded>.caption,.card.collapsed.expanded>.prov{display:block;}
+
+/* ---- cell output parts: figure + printed output, filtered independently ---- */
+.cb-part{display:block;}
+.cb-fig.part-off,.cb-out.part-off{display:none;}
+/* Plots = Collapsed folds a figure to a slim "show plot" bar (click to open) */
+.cb-fig.part-fold>*{display:none;}
+.cb-fig.part-fold{cursor:pointer;border:1px dashed var(--line);border-radius:8px;
+  padding:8px 12px;position:relative;min-height:0;}
+.cb-fig.part-fold::before{content:"\25b8  Show plot";font-family:var(--mono);
+  font-size:11px;color:var(--ink-3);letter-spacing:.02em;}
+.cb-fig.part-fold:hover::before{color:var(--cyan-deep);}
+.cb-fig.part-fold.part-open{cursor:default;border:none;padding:0;}
+.cb-fig.part-fold.part-open>*{display:revert;}
+.cb-fig.part-fold.part-open::before{display:none;}
 
 .cardhead{display:flex;align-items:center;gap:10px;margin-bottom:12px;
   padding-left:6px;}
@@ -1856,6 +1891,10 @@ body:not(.light) .docbar-p{color:#8ba0b2;}
 .k-transform .badge{background:#5b758914;color:#41566a;}
 .k-metric .badge{background:#46a89214;color:#2c8c7d;}
 .k-note .badge{background:#cf9a4e1f;color:#8a6326;}
+/* printed-output cells read "print" (a steel tone, distinct from md notes) */
+.k-print .badge{background:#5f7d8c1f;color:#3f5c6a;}
+.navitem.k-print .dot,.nk.k-print .dot{background:#5f7d8c;}
+.card.k-print::before{background:#5f7d8c;}
 /* code subtypes (base rules read on the light paper theme) */
 .ckmain-imports .badge{background:#8a6d4a1a;color:#7a5e38;}
 .ckmain-function .badge{background:#46a89218;color:#2c8c7d;}
@@ -1937,7 +1976,7 @@ pre.error{background:#fbf0ee;border-color:#f0d2cc;color:#8a3221;}
    document + raw views instead of running the whole page on. Short
    outputs are unaffected; slide frames keep their own sizing. */
 .content pre.result,.content pre.stream,.content pre.error,
-.content .rich,.content .xr-wrap,.content .alsoinner,
+.content .rich,.content .xr-wrap,
 .rawview pre.result,.rawview pre.stream,.rawview .rich,
 .rawview .xr-wrap{max-height:min(440px,62vh);overflow:auto;}
 .card.k-metric .cardbody pre.result{font-size:14px;
@@ -1952,14 +1991,9 @@ pre.error{background:#fbf0ee;border-color:#f0d2cc;color:#8a3221;}
 .caption{font-family:var(--serif);font-size:14px;
   color:var(--ink-2);margin:13px 0 0;padding-left:6px;line-height:1.6;}
 
-details.alsoprinted{margin-top:10px;border:1px dashed var(--paper-3);
-  border-radius:7px;}
-details.alsoprinted>summary{cursor:pointer;font-family:var(--mono);
-  font-size:10.5px;letter-spacing:.08em;color:var(--ink-3);
-  padding:7px 11px;user-select:none;}
-details.alsoprinted[open]>summary{
-  border-bottom:1px solid var(--paper-3);}
-details.alsoprinted .alsoinner{padding:10px 11px;}
+/* a cell's printed output part, adjacent to its figure part (Output filter) */
+.cb-out{margin-top:12px;}
+.cb-fig+.cb-out{margin-top:14px;}
 
 .prov{display:flex;align-items:center;gap:7px;flex-wrap:wrap;
   margin:13px 0 0;padding-left:6px;}
@@ -1973,7 +2007,6 @@ details.alsoprinted .alsoinner{padding:10px 11px;}
 /* ---------- code ---------- */
 .codewrap{margin:13px 0 0;border-top:1px solid var(--line);padding-top:11px;}
 .codewrap.bare{border-top:none;padding-top:0;margin-top:10px;}
-.codewrap.bare .codetoggle{display:none;}
 .codetoggle{font-family:var(--mono);font-size:11px;letter-spacing:.05em;
   color:var(--ink-3);background:none;border:none;cursor:pointer;padding:2px 6px;
   display:inline-flex;align-items:center;gap:7px;border-radius:5px;
@@ -2499,8 +2532,15 @@ body.creating-docs .apptop{
 .ckf-dot.ckmain-settings{background:#5b7589;}
 .ckf-dot.ckmain-plotting{background:#39a9c0;}
 .ckf-dot.ckmain-print{background:#cf9a4e;}
+.ckf-dot.ot-sw-print{background:#5f7d8c;}
+.ckf-dot.ot-sw-dataset{background:#4d90c0;}
+.ckf-dot.ot-sw-result{background:#9a7cc0;}
+.ckf-dot.ot-sw-error{background:#cf6a5a;}
 .ckf-empty{color:#7e93a4;font-size:11px;padding:8px;}
-#ck-filter-btn.on{border-color:var(--cyan);color:#fff;background:#39a9c022;}
+#ck-filter-btn.on,#ot-filter-btn.on{border-color:var(--cyan);color:#fff;
+  background:#39a9c022;}
+/* an output hidden by the advanced Output-types filter */
+.ot-off{display:none;}
 body.light .ckfilter-menu{background:#fff;border-color:var(--line);}
 body.light .ckf-row{color:var(--ink-2);}
 body.light .ckf-row:hover{background:#00000008;}
@@ -2671,6 +2711,7 @@ body:not(.light) .k-transform .badge{background:#5b758922;
   color:#93a7b8;}
 body:not(.light) .k-metric .badge{background:#46a89222;color:#6fcab4;}
 body:not(.light) .k-note .badge{background:#cf9a4e26;color:#dfb277;}
+body:not(.light) .k-print .badge{background:#5f7d8c2b;color:#a6c2cf;}
 body:not(.light) .nodeid{background:#ffffff0f;color:#8ba0b2;}
 body:not(.light) .note{color:#c3cfda;}
 body:not(.light) .note .caption{color:#c3cfda;}
@@ -2691,10 +2732,6 @@ body:not(.light) .codetoggle:hover{color:#5fc3d8;}
 body:not(.light) .htmltoggle{color:#8ba0b2;}
 body:not(.light) .htmltoggle:hover{color:#5fc3d8;}
 body:not(.light) .steplabel,body:not(.light) .ct-steps{color:#8ba0b2;}
-body:not(.light) details.alsoprinted{border-color:#ffffff1f;}
-body:not(.light) details.alsoprinted>summary{color:#8ba0b2;}
-body:not(.light) details.alsoprinted[open]>summary{
-  border-bottom-color:#ffffff1f;}
 body:not(.light) .depchip{color:#dfc49a;}
 body:not(.light) .depchip:hover{color:#fff;}
 body:not(.light) .mdmore{background:#101c28;border-color:#ffffff22;
@@ -2818,17 +2855,14 @@ _JS = r"""
     APP.order.forEach(function(stem){
       var sh=APP.shells[stem];
       var t=document.createElement('div');
-      t.className='tab'+(stem===APP.active?' current':'')
-        +(sh.trace?' tracetab':'');
+      t.className='tab'+(stem===APP.active?' current':'');
       t.setAttribute('role','tab');
-      t.title=sh.trace?(sh.title||'plot trace'):(sh.path||sh.title||stem);
+      t.title=sh.path||sh.title||stem;
       var lbl=document.createElement('span');lbl.className='tab-t';
-      lbl.textContent=sh.trace?(sh.title||'plot trace'):stem;
+      lbl.textContent=stem;
       t.appendChild(lbl);
-      /* trace tabs are transient views — always closeable, even in a
-         static export; notebook tabs keep the app/web reload+close */
-      if(APP.mode==='app'||APP.mode==='web'||sh.trace){
-        if(sh.path&&!sh.trace){
+      if(APP.mode==='app'||APP.mode==='web'){
+        if(sh.path){
           var r=document.createElement('button');r.className='tab-b';
           r.innerHTML='&#8635;';
           r.title=/^https?:/.test(sh.path)
@@ -2890,38 +2924,65 @@ _JS = r"""
     setTvBtn('tv-plots','Plots',plotState);
     setTvBtn('tv-output','Output',outState);
   }
-  function roleState(role){
-    return role==='markdown'?mdState:role==='plot'?plotState
-      :role==='output'?outState:codeState;   /* default: code */
-  }
   function applyFilters(){
     $$('.nbshell').forEach(function(sh){
+      /* plot-trace focus: in the focused notebook, only the plot's lineage
+         cells stay — everything else is filtered out of the document view */
+      var inFocus=focusStem&&sh.dataset.nb===focusStem&&focusIds;
       $$('.card',sh).forEach(function(c){
-        var role=c.dataset.role||'code';
-        var st=roleState(role);
-        /* advanced: an unchecked code TYPE hides that code */
-        var ckOff=!!(c.dataset.ck&&ckHidden[c.dataset.ck.split(' ')[0]]);
-        /* the card is removed by its role filter, or (a pure code card) by an
-           unchecked code type */
-        var filteredOut=st==='hidden'||(role==='code'&&ckOff);
-        /* a per-cell eye can hide one cell regardless of the global filter */
+        /* a per-cell eye can hide one cell regardless of the global filters */
         var off=c.classList.contains('cell-off');
-        var gone=filteredOut||off;
-        c.classList.toggle('is-hidden',gone);
-        /* Markdown / Code / Plots can COLLAPSE to the header (click to open) */
-        c.classList.toggle('collapsed',!gone&&st==='collapsed');
-        if(gone||st!=='collapsed') c.classList.remove('expanded');
-        /* the code TUCKED under a plot / output card follows the Code filter
-           (+ its own type); the card itself stays put */
-        var cw=c.querySelector('.codewrap');
-        if(cw&&role!=='code')
-          cw.classList.toggle('code-off',codeState==='hidden'||ckOff);
+        var note=c.dataset.note==='1';
+        var filtGone;
+        if(note){
+          /* a markdown note is one part — the Markdown filter owns the card */
+          filtGone=mdState==='hidden';
+          c.classList.toggle('collapsed',
+            !filtGone&&!off&&mdState==='collapsed');
+          if(filtGone||off||mdState!=='collapsed') c.classList.remove('expanded');
+        } else {
+          /* PART-BASED: every non-markdown cell may hold a code part, a plot
+             part and an output part; each answers to its OWN filter. The card
+             disappears only when none of its parts remain visible. */
+          var ckOff=!!(c.dataset.ck&&ckHidden[c.dataset.ck.split(' ')[0]]);
+          var fig=c.querySelector('.cb-fig'),
+              out=c.querySelector('.cb-out'),
+              cw=c.querySelector('.codewrap');
+          if(fig){
+            fig.classList.toggle('part-off',plotState==='hidden');
+            fig.classList.toggle('part-fold',plotState==='collapsed');
+            if(plotState!=='collapsed') fig.classList.remove('part-open');
+          }
+          if(out) out.classList.toggle('part-off',outState==='hidden');
+          if(cw) cw.classList.toggle('code-off',codeState==='hidden'||ckOff);
+          var figVis=!!fig&&plotState!=='hidden';
+          /* the advanced Output-types filter hides individual outputs by kind;
+             the output part counts as visible only if some output survives */
+          var outVis=false;
+          if(out&&outState!=='hidden'){
+            [].forEach.call(out.children,function(el){
+              var mm=(el.className||'').match(/\bot-([a-z]+)\b/);
+              var typ=mm&&mm[1]!=='off'?mm[1]:null;
+              var otOff=!!(typ&&otHidden[typ]);
+              el.classList.toggle('ot-off',otOff);
+              if(!otOff) outVis=true;
+            });
+            if(!out.children.length) outVis=true;
+          }
+          var codeVis=!!cw&&codeState!=='hidden'&&!ckOff;
+          filtGone=!figVis&&!outVis&&!codeVis;
+          c.classList.remove('collapsed','expanded');   /* parts fold, not cards */
+        }
         var id=c.id.replace(/^card-/,'');
+        /* a cell outside the focused plot's lineage drops out entirely */
+        var focusOut=inFocus&&!focusIds[id];
+        if(focusOut) filtGone=true;
+        c.classList.toggle('is-hidden',filtGone||off);
         var nav=sh.querySelector('.navitem[data-item="'+id+'"]');
         if(nav){
           /* filtered out -> gone from the sidebar; manually hidden -> STAYS
              (dimmed, so you can bring it back) */
-          nav.classList.toggle('nav-hidden',filteredOut);
+          nav.classList.toggle('nav-hidden',filtGone);
           nav.classList.toggle('cell-off',off);
         }
       });
@@ -2946,6 +3007,8 @@ _JS = r"""
     renderTypeButtons();
     var fb=$('#ck-filter-btn');
     if(fb) fb.classList.toggle('on',Object.keys(ckHidden).length>0);
+    var ob=$('#ot-filter-btn');
+    if(ob) ob.classList.toggle('on',Object.keys(otHidden).length>0);
   }
   /* advanced filter menu: hide specific code subtypes */
   function presentCkTypes(){
@@ -2995,15 +3058,55 @@ _JS = r"""
     if(ckMenu&&!ckMenu.hidden&&!ckMenu.contains(e.target)
        &&e.target!==ckBtn) ckMenu.hidden=true;
   });
+  /* advanced OUTPUT-type filter: hide specific printed-output kinds (print,
+     dataset, result, error) — like the code-type filter, but for output */
+  var otHidden={};
+  var OT_TYPES=['print','dataset','result','error'];
+  function presentOtTypes(){
+    var set={};
+    $$('.nbshell .cb-out[data-ot]').forEach(function(c){
+      c.dataset.ot.split(' ').forEach(function(t){if(t)set[t]=1;});});
+    return OT_TYPES.filter(function(t){return set[t];});
+  }
+  function renderOtMenu(){
+    var m=$('#ot-filter-menu'); if(!m) return;
+    m.innerHTML='';
+    var types=presentOtTypes();
+    if(!types.length){
+      m.innerHTML='<div class="ckf-empty">No printed output yet</div>';return;}
+    var h=document.createElement('div');h.className='ckf-h';
+    h.textContent='show output types';m.appendChild(h);
+    types.forEach(function(t){
+      var row=document.createElement('label');row.className='ckf-row';
+      var cb=document.createElement('input');cb.type='checkbox';
+      cb.checked=!otHidden[t];
+      cb.addEventListener('change',function(){
+        if(cb.checked) delete otHidden[t]; else otHidden[t]=1;
+        applyFilters();});
+      var sw=document.createElement('span');sw.className='ckf-dot ot-sw-'+t;
+      var tx=document.createElement('span');tx.textContent=t;
+      row.appendChild(cb);row.appendChild(sw);row.appendChild(tx);
+      m.appendChild(row);});
+  }
+  var otBtn=$('#ot-filter-btn'),otMenu=$('#ot-filter-menu');
+  if(otBtn) otBtn.addEventListener('click',function(e){
+    e.stopPropagation();
+    if(!otMenu) return;
+    if(otMenu.hidden){
+      renderOtMenu();otMenu.hidden=false;
+      var r=otBtn.getBoundingClientRect();
+      otMenu.style.top=(r.bottom+6)+'px';
+      otMenu.style.left=Math.max(6,
+        Math.min(r.left,window.innerWidth-190))+'px';
+    } else otMenu.hidden=true;});
+  document.addEventListener('click',function(e){
+    if(otMenu&&!otMenu.hidden&&!otMenu.contains(e.target)
+       &&e.target!==otBtn) otMenu.hidden=true;});
   /* the code state drives every code block: code cards AND the blocks
      folded under every figure / dataset card. Visible = expanded,
      Collapsed = folded, Hidden = the block disappears entirely. */
   function setAllCode(open,root){
     $$('.codewrap',root||document).forEach(function(w){
-      /* a "bare" code cell (no output) has NO toggle button — its source IS
-         the card body, so it must stay open or the card becomes an empty,
-         unexpandable husk. Never fold bare code. */
-      if(w.classList.contains('bare')){w.setAttribute('data-open','');return;}
       if(open) w.setAttribute('data-open','');
       else w.removeAttribute('data-open');
       var btn=$('.codetoggle',w);
@@ -3448,13 +3551,19 @@ _JS = r"""
         if(window.SemTrace) window.SemTrace.open(stem,btn.dataset.trace);
       });
     });
-    /* ---- a Collapsed card (Markdown/Code/Plots = Collapsed) opens when its
-       header is clicked; clicking again folds it back ---- */
+    /* ---- a Collapsed markdown note opens when its header is clicked;
+       clicking again folds it back ---- */
     $$('.card',shell).forEach(function(c){
       var head=$('.cardhead',c);
       if(head) head.addEventListener('click',function(e){
         if(e.target.closest('button,a')) return;   /* leave eye/trace clicks */
         if(c.classList.contains('collapsed')) c.classList.toggle('expanded');
+      });
+    });
+    /* ---- a figure folded by Plots = Collapsed opens on click ---- */
+    $$('.cb-fig',shell).forEach(function(f){
+      f.addEventListener('click',function(){
+        if(f.classList.contains('part-fold')) f.classList.toggle('part-open');
       });
     });
 
@@ -3489,31 +3598,50 @@ _JS = r"""
     if(window.MathJax&&MathJax.typesetPromise)
       MathJax.typesetPromise([shell]).catch(function(){});
   }
-  /* a plot trace, opened as its OWN tab (the deck builds the pane; this side
-     mounts it as a synthetic, always-closeable shell in the tab strip) */
-  function openTraceTab(stem,anchor,title){
-    var key='trace::'+stem+'::'+anchor;
-    if(APP.shells[key]){activate(key);return;}
-    if(!(window.SemTrace&&window.SemTrace.buildPane)) return;
-    var built=window.SemTrace.buildPane(stem,anchor);
-    if(!built){alert('Plot trace not available');return;}
-    var shell=document.createElement('div');
-    shell.className='nbshell tracetab';shell.dataset.nb=key;
-    var head=document.createElement('div');head.className='tracetab-head';
-    var eb=document.createElement('span');eb.className='tracetab-eyebrow';
-    eb.textContent='plot trace';
-    var tt=document.createElement('span');tt.className='tracetab-t';
-    tt.textContent=built.title;
-    head.appendChild(eb);head.appendChild(tt);
-    shell.appendChild(head);shell.appendChild(built.node);
-    $('#docs').appendChild(shell);
-    APP.shells[key]={el:shell,data:{},path:'',title:built.title,trace:true};
-    APP.order.push(key);
-    activate(key);
-    if(window.MathJax&&MathJax.typesetPromise)
-      MathJax.typesetPromise([shell]).catch(function(){});
+  /* ---- "plot trace" = FOCUS the document on one plot's lineage cells ----
+     it is the same docs view (all filters + buttons live) with every
+     unrelated cell hidden, plus a banner + the dependency graph. */
+  var focusStem=null,focusIds=null;
+  function focusTrace(stem,ids,title,graph){
+    focusStem=stem;focusIds={};
+    (ids||[]).forEach(function(i){focusIds[i]=1;});
+    if(APP.shells[stem]) activate(stem);
+    var bar=$('#focusbar'),tt=$('#focusbar-t'),gw=$('#focusbar-graph-wrap'),
+        gb=$('#focusbar-graph');
+    if(tt) tt.textContent=title||'Plot trace';
+    if(gw){gw.innerHTML='';if(graph){gw.appendChild(graph);}gw.hidden=true;}
+    if(gb) gb.hidden=!graph;
+    if(bar) bar.hidden=false;
+    applyFilters();
+    var sh=APP.shells[stem];
+    if(sh&&sh.el){var c=sh.el.querySelector('.content');
+      if(c) c.scrollTop=0;}
+    window.scrollTo(0,0);
   }
-  APP.openTraceTab=openTraceTab;
+  function clearFocus(){
+    focusStem=null;focusIds=null;
+    var bar=$('#focusbar'); if(bar) bar.hidden=true;
+    applyFilters();
+  }
+  function focusGoto(itemId){
+    var sh=focusStem&&APP.shells[focusStem]; if(!sh) return;
+    var card=sh.el.querySelector('.card[id="card-'+itemId+'"]');
+    if(card){card.scrollIntoView({block:'center'});
+      card.classList.add('target-flash');
+      setTimeout(function(){card.classList.remove('target-flash');},1200);}
+  }
+  APP.focusTrace=focusTrace;APP.clearFocus=clearFocus;APP.focusGoto=focusGoto;
+  var fbClear=$('#focusbar-clear');
+  if(fbClear) fbClear.addEventListener('click',clearFocus);
+  var fbGraph=$('#focusbar-graph'),fbGw=$('#focusbar-graph-wrap');
+  if(fbGraph) fbGraph.addEventListener('click',function(){
+    if(!fbGw) return;
+    fbGw.hidden=!fbGw.hidden;
+    fbGraph.setAttribute('aria-expanded',(!fbGw.hidden).toString());
+  });
+  document.addEventListener('keydown',function(e){
+    if(e.key==='Escape'&&focusStem&&!e.defaultPrevented) clearFocus();
+  });
   /* one open per source at a time: repeated Enter/clicks are ignored
      while the fetch runs, and the dialog shows a loading bar */
   var OPENBUSY={},dlgBusyN=0;
@@ -4087,20 +4215,18 @@ _DECK_HTML = """
   </div>
   <div class="deck-toast" id="deck-toast" hidden></div>
 </div>
-<div class="tracepop" id="tracepop" hidden>
-  <div class="tracepop-scrim" id="tracepop-scrim"></div>
-  <div class="tracepop-box">
-    <div class="tracepop-head">
-      <span class="tracepop-eyebrow">plot trace</span>
-      <span class="tracepop-t" id="tracepop-t"></span>
-      <span class="dc-spring"></span>
-      <button class="dbtn" id="tracepop-tab"
-        title="Open this plot trace as its own tab">&#8599; Open as tab</button>
-      <button class="dbtn" id="tracepop-close"
-        title="Close (Esc)">&#10005;</button>
-    </div>
-    <div class="tracepop-body" id="tracepop-body"></div>
+<div class="focusbar" id="focusbar" hidden>
+  <div class="focusbar-row">
+    <span class="focusbar-eyebrow">plot trace</span>
+    <span class="focusbar-t" id="focusbar-t"></span>
+    <span class="dc-spring"></span>
+    <button class="focusbar-btn" id="focusbar-graph" hidden
+      aria-expanded="false" title="Show the dependency graph for this plot">
+      &#9903; Graph</button>
+    <button class="focusbar-btn primary" id="focusbar-clear"
+      title="Return to the full document">&#10005; Show full document</button>
   </div>
+  <div class="focusbar-graph-wrap" id="focusbar-graph-wrap" hidden></div>
 </div>
 <div class="pickbar" id="pickbar" hidden>
   <span>&#128204; Click a card in the notebook to place it in the
@@ -4291,8 +4417,7 @@ body.deck-open{overflow:hidden;}
   white-space:nowrap;}
 .vfull-body{flex:1;min-height:0;overflow:auto;}
 
-/* ---- docs "view plot trace" popup (a DARK panel so the trace looks
-   exactly like it does in the presentation — one consistent component) ---- */
+/* the figure "Plot trace" button */
 .plot-trace-btn{flex:none;font-family:var(--mono);font-size:10.5px;
   letter-spacing:.02em;border:1px solid var(--line);background:var(--paper-2);
   color:var(--ink-2);border-radius:20px;padding:3px 10px;cursor:pointer;
@@ -4302,27 +4427,30 @@ body.deck-open{overflow:hidden;}
 body:not(.light) .plot-trace-btn{background:#0e1824;color:#8ba0b2;
   border-color:#ffffff1f;}
 body:not(.light) .plot-trace-btn:hover{color:#5fc3d8;border-color:#39a9c066;}
-.tracepop{position:fixed;inset:0;z-index:180;display:flex;
-  align-items:center;justify-content:center;padding:34px;}
-.tracepop[hidden]{display:none;}
-.tracepop-scrim{position:absolute;inset:0;background:#04080ccc;
-  backdrop-filter:blur(2px);}
-.tracepop-box{position:relative;z-index:1;width:min(940px,96vw);
-  max-height:92vh;display:flex;flex-direction:column;
-  background:#0b141d;border:1px solid #ffffff1f;border-radius:14px;
-  box-shadow:0 24px 80px #000a;overflow:hidden;}
-.tracepop-head{display:flex;align-items:center;gap:10px;flex:none;
-  padding:14px 16px;border-bottom:1px solid #ffffff14;}
-.tracepop-eyebrow{font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;
+/* ---- plot-trace FOCUS bar: a floating pill; the document itself is subset
+   to the plot's lineage cells, so all its filters + buttons stay live ---- */
+.focusbar{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);
+  z-index:120;max-width:calc(100vw - 36px);}
+.focusbar[hidden]{display:none;}
+.focusbar-row{display:flex;align-items:center;gap:11px;background:#0b141d;
+  border:1px solid #ffffff26;border-radius:24px;padding:8px 9px 8px 18px;
+  box-shadow:0 12px 38px #0009;}
+.focusbar-eyebrow{font-family:var(--mono);font-size:9px;letter-spacing:.2em;
   text-transform:uppercase;color:#5fc3d8;flex:none;}
-.tracepop-t{font-size:15px;font-weight:600;color:#eef4f8;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.tracepop-body{flex:1;min-height:0;overflow:auto;padding:16px 18px 22px;}
-.tracepop-body .vtrace{max-height:none;}
-/* the per-step full-screen button uses an overlay inside the hidden deck;
-   in the popup steps expand inline, so it is redundant */
-.tracepop-body .vo-full{display:none;}
-.tracepop-none{color:#8ba0b2;font-size:14px;text-align:center;padding:30px;}
+.focusbar-t{font-size:13.5px;font-weight:600;color:#eef4f8;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:36vw;}
+.focusbar-btn{flex:none;font-family:var(--sans);font-size:12px;
+  border:1px solid #ffffff22;background:#ffffff0d;color:#dce6ee;
+  border-radius:18px;padding:5px 13px;cursor:pointer;white-space:nowrap;}
+.focusbar-btn:hover{background:#ffffff18;}
+.focusbar-btn.primary{background:#39a9c022;border-color:#39a9c066;color:#bfeaf5;}
+.focusbar-btn.primary:hover{background:#39a9c033;}
+.focusbar-graph-wrap{position:absolute;left:0;bottom:calc(100% + 10px);
+  background:#0b141d;border:1px solid #ffffff22;border-radius:12px;padding:12px;
+  box-shadow:0 12px 40px #0009;max-height:60vh;overflow:auto;
+  width:min(720px,90vw);}
+.focusbar-graph-wrap[hidden]{display:none;}
+.focusbar-graph-wrap .plotgraph-wrap{margin:0;}
 /* per-plot dependency graph */
 .plotgraph-wrap{margin:0 0 18px;padding:12px 12px 6px;
   background:#0e1824;border:1px solid #ffffff12;border-radius:10px;}
@@ -4338,18 +4466,6 @@ body:not(.light) .plot-trace-btn:hover{color:#5fc3d8;border-color:#39a9c066;}
 .pg-node:focus{outline:none;}
 .pg-node text{font-family:var(--sans);font-size:12px;fill:#0b141d;
   font-weight:600;pointer-events:none;}
-/* the plot trace opened as its OWN tab: a dark panel in the docs area */
-.nbshell.tracetab{flex-direction:column;background:#0b141d;min-height:0;}
-.nbshell.tracetab:not([hidden]){display:flex;}
-.tracetab-head{flex:none;display:flex;align-items:baseline;gap:10px;
-  padding:16px 26px;border-bottom:1px solid #ffffff14;}
-.tracetab-eyebrow{font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;
-  text-transform:uppercase;color:#5fc3d8;flex:none;}
-.tracetab-t{font-size:17px;font-weight:600;color:#eef4f8;}
-.tracepane-body{flex:1;min-height:0;overflow:auto;padding:18px 26px 34px;}
-.tracepane-body .vtrace{max-height:none;}
-.tracepane-body .vo-full{display:none;}
-.tab.tracetab .tab-t{color:#5fc3d8;}
 
 .slide{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;
   animation:slidein .28s ease;}
@@ -4706,6 +4822,10 @@ ul.an-ul li{margin:.18em 0;white-space:pre-wrap;}
   font-size:14px;margin:0;}
 .an-cell .cardbody{flex:1;min-height:0;display:flex;
   flex-direction:column;padding:8px;}
+/* the .cb-fig figure-part wrapper must pass the flex height through in slide
+   frames, else .figframe's flex:1 fit-to-frame sizing is inert and plots clip */
+.an-cell .cb-fig,.spane .cb-fig,.slide-fig .cb-fig{flex:1;min-height:0;
+  display:flex;flex-direction:column;}
 .an-cell .figframe{flex:1;min-height:0;display:flex;
   align-items:center;justify-content:center;overflow:hidden;
   border:none;padding:6px;}
@@ -5187,10 +5307,10 @@ _DECK_JS = r"""
     var b=cloneBody(ref);
     if(!b) return cloneCode(ref);
     if(part==='figure'){
-      $$('.xr-wrap,pre.result,pre.stream,.rich,details.alsoprinted',b)
+      $$('.cb-out,.xr-wrap,pre.result,pre.stream,.rich',b)
         .forEach(function(n){if(n.parentNode) n.parentNode.removeChild(n);});
     } else if(part==='output'){
-      $$('.figframe,.figpager',b).forEach(function(n){
+      $$('.cb-fig,.figframe,.figpager',b).forEach(function(n){
         if(n.parentNode) n.parentNode.removeChild(n);});
     }
     return b;
@@ -5416,66 +5536,9 @@ _DECK_JS = r"""
     wrap.appendChild(lbl);wrap.appendChild(svg);
     return wrap;
   }
-  /* ---- the docs "view plot trace" popup ---- */
-  var traceItem=null;
-  function traceSpecForItem(it){
-    var key='semtrace:'+it.ns;
-    function load(){
-      try{return JSON.parse(localStorage.getItem(key))||[];}
-      catch(e){return [];}}
-    function save(a){try{localStorage.setItem(key,JSON.stringify(a));}
-      catch(e){}}
-    var list=load();
-    return {
-      groups:[lineageForItem(it.ns)].filter(Boolean),
-      list:function(){return list;},
-      toggle:function(ns){var i=list.indexOf(ns);
-        if(i>=0)list.splice(i,1);else list.push(ns);save(list);}
-    };
-  }
-  /* build (graph + trace) for one plot INTO a container; used by both the
-     popup and the "open as tab" pane so they are identical */
-  function fillTraceInto(container,it){
-    container.innerHTML='';
-    var group=lineageForItem(it.ns);
-    if(!group||!group.steps.length){
-      var none=document.createElement('p');none.className='tracepop-none';
-      none.textContent='No code lineage was found for this plot.';
-      container.appendChild(none);return;
-    }
-    var traceEl=renderTrace(traceSpecForItem(it));
-    /* clicking a graph node expands that cell's step in the trace below
-       (openVFull's overlay lives inside the hidden deck, so avoid it) */
-    var gr=plotGraph(group,function(step){
-      var b=container.querySelector('.vo-step[data-ns="'+step.ns+'"]');
-      if(!b){
-        /* step is currently hidden — reveal it (persist) + rebuild in place */
-        traceSpecForItem(it).toggle(step.ns);
-        fillTraceInto(container,it);
-        b=container.querySelector('.vo-step[data-ns="'+step.ns+'"]');
-        if(!b) return;
-      }
-      if(!b.classList.contains('open')){
-        var hh=b.querySelector('.vo-step-h'); if(hh) hh.click();
-      }
-      b.scrollIntoView({block:'center'});
-    });
-    if(gr) container.appendChild(gr);
-    container.appendChild(traceEl);
-  }
   function traceItemFor(stem,anchor){
     return resolveRef(stem?nsKey(stem,anchor):anchor)||resolveRef(anchor);
   }
-  function openPlotTrace(stem,anchor){
-    var it=traceItemFor(stem,anchor);
-    var pop=$('#tracepop'),body=$('#tracepop-body');
-    if(!it||!pop||!body) return;
-    traceItem={stem:stem,anchor:anchor,it:it};
-    var tt=$('#tracepop-t'); if(tt) tt.textContent=it.title||'Plot trace';
-    fillTraceInto(body,it);
-    pop.hidden=false;
-  }
-  function closePlotTrace(){var pop=$('#tracepop'); if(pop) pop.hidden=true;}
   function lineageFor(s){
     /* one group per framed card, ordered like the frames sit on the
        slide (row by row, left to right); each group = that card's full
@@ -7291,32 +7354,23 @@ _DECK_JS = r"""
   if(upBtn) upBtn.addEventListener('click',scrollToSlide);
   var vfClose=$('#vfull-close');
   if(vfClose) vfClose.addEventListener('click',closeVFull);
-  /* ---- docs "view plot trace" popup: close / scrim / open-as-tab / Esc ---- */
-  var tpClose=$('#tracepop-close'),tpScrim=$('#tracepop-scrim'),
-      tpTab=$('#tracepop-tab');
-  if(tpClose) tpClose.addEventListener('click',closePlotTrace);
-  if(tpScrim) tpScrim.addEventListener('click',closePlotTrace);
-  if(tpTab) tpTab.addEventListener('click',function(){
-    if(traceItem&&window.SemApp&&window.SemApp.openTraceTab){
-      window.SemApp.openTraceTab(traceItem.stem,traceItem.anchor,
-        (traceItem.it&&traceItem.it.title)||'Plot trace');
-      closePlotTrace();
-    }
-  });
-  document.addEventListener('keydown',function(e){
-    var pop=$('#tracepop');
-    if(pop&&!pop.hidden&&e.key==='Escape'){
-      e.preventDefault();e.stopPropagation();closePlotTrace();}
-  },true);
-  /* the docs side (a separate IIFE) drives the popup + the trace tab
-     through this bridge */
+  /* ---- "view plot trace" is just the DOCS view, subset to the cells that
+     build this plot. The deck (which owns the lineage) hands the cell ids +
+     a dependency graph to the docs side, which focuses on them — every
+     document filter and button keeps working because it IS the document. ---- */
   window.SemTrace={
-    open:function(stem,anchor){openPlotTrace(stem,anchor);},
-    buildPane:function(stem,anchor){
-      var it=traceItemFor(stem,anchor); if(!it) return null;
-      var wrap=document.createElement('div');wrap.className='tracepane-body';
-      fillTraceInto(wrap,it);
-      return {node:wrap,title:(it.title||'Plot trace')};
+    open:function(stem,anchor){
+      var it=traceItemFor(stem,anchor); if(!it) return;
+      if(!(window.SemApp&&window.SemApp.focusTrace)) return;
+      var group=lineageForItem(it.ns);
+      var ids={},list=[];
+      if(group) group.steps.forEach(function(s){
+        if(s.card&&!ids[s.card]){ids[s.card]=1;list.push(s.card);}});
+      if(it.card&&!ids[it.card]) list.push(it.card);   /* the plot itself */
+      var graph=group?plotGraph(group,function(step){
+        if(window.SemApp.focusGoto) window.SemApp.focusGoto(step.card);
+      }):null;
+      window.SemApp.focusTrace(it.nb,list,it.title||'Plot trace',graph);
     }
   };
   /* ---- "Notebooks" popover in the deck header ---- */
@@ -7878,9 +7932,12 @@ _TEMPLATE = """<!doctype html>
     <button class="toggle tv" id="tv-output"
       title="Printed output — tables, values, text results. Click to show
  / hide"></button>
+    <button class="toggle" id="ot-filter-btn"
+      title="Advanced: hide specific OUTPUT types (print, dataset, result,
+ error)">Output types &#9662;</button>
     <button class="toggle" id="ck-filter-btn"
-      title="Advanced: hide specific code cell types (imports, plotting,
- …)">Types &#9662;</button>
+      title="Advanced: hide specific CODE cell types (imports, plotting,
+ …)">Code types &#9662;</button>
     <button class="toggle" id="view-raw"
       title="Toggle between the semantic view and the raw notebook
  (cells in order, directives visible)">Raw notebook</button>
@@ -7988,6 +8045,7 @@ _TEMPLATE = """<!doctype html>
 </div>
 <div class="drophint" id="drophint" hidden>Drop .ipynb files to open</div>
 <div class="ckfilter-menu" id="ck-filter-menu" hidden></div>
+<div class="ckfilter-menu" id="ot-filter-menu" hidden></div>
 <input type="file" id="fileinput" accept=".ipynb" multiple hidden>
 <input type="file" id="deckfile" accept=".json" hidden>
 {deck_shell}
@@ -8610,18 +8668,37 @@ def _self_test() -> None:
     # notebooks-in-presentation chips + advanced code-type filter
     assert 'id="dc-nbs"' in out and "renderPresNbs" in out
     assert 'id="ck-filter-btn"' in out and 'id="ck-filter-menu"' in out
+    # printed-output cells read "print", markdown notes stay "note"
+    assert _BADGE["text"] == "print" and _BADGE["note"] == "note"
+    # advanced OUTPUT-type filter (print/dataset/result/error) + tagged outputs
+    assert 'id="ot-filter-btn"' in out and 'id="ot-filter-menu"' in out
+    assert "function presentOtTypes" in out and ".ot-off{display:none" in out
+    assert "ot-print" in out and 'cb-out" data-ot=' in out
+    # the sidebar key sits at the TOP (before the first section row)
+    _nav = render_nav(doc)
+    assert "navkey" in _nav and _nav.index("navkey") < _nav.index("navsec-row")
+    # a figure with no explicit name is auto-named "Plot N"
+    pdoc = parse_notebook({"cells": [
+        {"cell_type": "code", "source": "plt.plot(x)", "outputs": [
+            {"output_type": "display_data",
+             "data": {"image/png": "iVBORw0KGgo="}}]}]})
+    pfig = [it for s in pdoc.sections for it in s.items
+            if it.kind in ("figure", "diagnostic")]
+    assert pfig and pfig[0].title == "Plot 1" and not pfig[0].title_echo
     # huge printed output is capped + scrollable in the document view
     assert "max-height:min(440px,62vh)" in out
-    # four role filters — Markdown/Code/Plots cycle 3 states, Output toggles;
-    # cards carry data-role so printed output is NOT lumped in with code
+    # four filters — Markdown/Code/Plots cycle 3 states, Output toggles
     assert "var CODE_CYCLE=['visible','collapsed','hidden']" in out
     assert 'id="tv-markdown"' in out and 'id="tv-plots"' in out
     assert 'id="tv-output"' in out and 'id="tv-code"' in out
-    assert 'data-role="output"' in out and 'data-role="code"' in out
-    assert "function roleState" in out and ".card.collapsed" in out
+    # PART-BASED: a cell's output splits into a filterable figure + output part;
+    # the Code filter reaches the code (codewrap) in EVERY non-markdown cell
+    assert 'class="cb-part cb-fig"' in out and 'class="cb-part cb-out"' in out
+    assert ".cb-fig.part-off" in out and ".cb-fig.part-fold" in out
+    # the cb-fig wrapper must pass flex height through in slide frames
+    assert ".an-cell .cb-fig,.spane .cb-fig,.slide-fig .cb-fig" in out
     assert "function applyCodeState" in out and ".codewrap.code-off" in out
-    # bare code cells (no output, no toggle) must never be folded to a husk
-    assert "w.classList.contains('bare')){w.setAttribute('data-open'" in out
+    assert ".card.collapsed" in out   # markdown notes still card-collapse
     # plain 'code' is a filter type too, so unchecking all == hide code
     assert "'constant','code']" in out
     # per-cell eyes: one on every card header, one on every sidebar item
@@ -8678,11 +8755,14 @@ def _self_test() -> None:
     assert by_anchor["fig2"].chain == ["cell:c-prep"]
     assert '"chain": ["cell:c-prep"]' in out
 
-    # mixed-output cell: figure face first, repr behind a disclosure
+    # mixed-output cell: the figure and the printed repr become SEPARATE,
+    # independently filterable parts (cb-fig + cb-out), not a disclosure
     mixed = [it for s in doc.sections for it in s.items
              if it.anchor == "mixed"][0]
     assert mixed.kind == "figure"
-    assert "alsoprinted" in out and "also printed by this cell" in out
+    assert any(o.has_image for o in mixed.outputs)
+    assert any(not o.has_image for o in mixed.outputs)
+    assert "alsoprinted" not in out   # the old "also printed" disclosure is gone
 
     # several figures from one cell -> pager, one figure at a time
     assert 'class="figpager" data-n="2"' in out
@@ -8786,13 +8866,13 @@ def _self_test() -> None:
     # the code trace is one reusable component (presentation + docs popup)
     assert "vo-eye" in out and "function renderTrace" in out
     assert "function traceNode" in out and "function lineageForItem" in out
-    # docs "view plot trace": figure button, popup, per-plot graph, bridge
-    assert 'class="plot-trace-btn"' in out and 'id="tracepop"' in out
-    assert "function openPlotTrace" in out and "function plotGraph" in out
+    # docs "view plot trace" = FOCUS the document on the plot's lineage cells
+    # (the same docs view, subset — no bespoke widget), with a graph + banner
+    assert 'class="plot-trace-btn"' in out and 'id="focusbar"' in out
+    assert "function focusTrace" in out and "function plotGraph" in out
     assert "window.SemTrace" in out and ".pg-node" in out
-    # the trace can pop out into its own in-app tab
-    assert 'id="tracepop-tab"' in out and "function openTraceTab" in out
-    assert "buildPane" in out and ".nbshell.tracetab" in out
+    assert 'id="focusbar-clear"' in out and "APP.focusTrace" in out
+    assert "var focusStem" in out   # the focus set drives applyFilters
     # presentation "Notebooks" popover: open-all / refresh-all
     assert 'id="dc-nbs-btn"' in out and 'id="dc-nbs-menu"' in out
     assert "function renderNbsMenu" in out and "function openPresNbs" in out
