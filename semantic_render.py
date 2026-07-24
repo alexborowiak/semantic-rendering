@@ -2449,15 +2449,17 @@ several cells under one figure (see the README for details)</td></tr>
 button &mdash; exactly one is active, so that button is always the way
 back. <b>New</b> starts one; <b>&#171;</b> shrinks or hides the
 rail.</li>
-<li>In the <b>builder</b>, pick a slide layout (diagrams: full, halves,
-rows, quarters, a <b>title slide</b>, or a <b>blank canvas</b>), click
-a pane, then <b>click any card in the document</b> to place it &mdash;
-from <i>any</i> open tab, so one deck can mix several notebooks.</li>
-<li><b>&#9998; Edit slide</b> opens a PowerPoint-style editor:
-<b>+ Text</b>, <b>+ Arrow</b>, <b>+ Box</b>, and <b>+ Cell</b> &mdash;
-a draggable, resizable frame that holds any notebook card (click it,
-pick a card, swap later with &#8644; Replace). Select anything for
-colours, text size, line thickness, dash and fill.</li>
+<li>A presentation opens straight in the <b>slide editor</b>. Add
+content with <b>+ Notebook cell</b> &mdash; a draggable, resizable frame
+that holds any notebook card: drop it on the slide, then click a card in
+your notebook (from <i>any</i> open tab, so one deck can mix several
+notebooks) to fill it; swap later with &#8644; Replace. Pick a slide
+layout from the diagrams (full, halves, rows, quarters, a
+<b>title slide</b>, or a <b>blank canvas</b>).</li>
+<li>The editor is PowerPoint-style: <b>+ Text</b>, <b>+ Arrow</b>, and
+<b>+ Shapes</b> (rectangle, ellipse, star, arrow, cloud, and more).
+Select anything for colours, text size, line thickness, dash and fill;
+use <b>Notebook view</b> to scroll your cells and jump back.</li>
 <li><b>&#9654; Present</b> plays full screen. Arrow keys &larr;/&rarr;
 move through the story; on slides with code, &darr; descends the
 <b>code trail</b> &mdash; every cell that made the figure, one per
@@ -3290,10 +3292,100 @@ _JS = r"""
     tabList().forEach(function(s){APP.shells[s].el.hidden=(s!==stem);});
     renderTabs();
     renderRawBtn();
+    updateHash();
     document.dispatchEvent(new CustomEvent('sem:activate',
       {detail:{stem:stem}}));
   }
   APP.activate=activate;
+
+  /* ================= URL routing: a unique hash per view ================
+     #/doc/<stem>  a document tab   #/pres/<name>[/s<n>]  a presentation slide.
+     Bookmarkable + survives reload + back/forward, in every mode (hash only,
+     so no server routing needed). The deck registers deckState/deckOpen. */
+  var initialHash=location.hash, routeReady=false, pendingRoute=null,
+      routeTimer=null;
+  function setHash(h){
+    if(location.hash===h||(!location.hash&&h==='#/')) return;
+    /* replaceState (not location.hash=) so in-app navigation NEVER floods the
+       back stack — the URL always mirrors the view, bookmarkable + reloadable,
+       and Back leaves the app cleanly rather than stepping through tab switches */
+    try{ if(history.replaceState)
+           history.replaceState(null,'',
+             location.pathname+location.search+(h==='#/'?'':h));
+         else location.hash=h; }catch(e){}
+  }
+  function routeParse(hash){
+    return String(hash||'').replace(/^#\/?/,'').split('/')
+      .filter(Boolean).map(function(p){
+        try{return decodeURIComponent(p);}catch(e){return p;}});
+  }
+  function updateHash(){
+    if(!routeReady) return;
+    var d=APP.deckState&&APP.deckState();
+    if(d&&d.name){
+      setHash('#/pres/'+encodeURIComponent(d.name)
+        +(d.slide!=null?('/s'+(d.slide+1)):''));
+      return;
+    }
+    var a=APP.active&&APP.shells[APP.active];
+    var stem=a&&a.trace?a.source:APP.active;   /* a trace tab -> its source */
+    setHash(stem?('#/doc/'+encodeURIComponent(stem)):'#/');
+  }
+  APP.updateHash=updateHash;
+  /* idempotent: applying the hash for the view already showing is a no-op,
+     so a programmatic setHash -> hashchange never loops or double-renders */
+  function applyHash(hash){
+    var parts=routeParse(hash);
+    if(!parts.length) return;
+    if(parts[0]==='pres'&&parts[1]){
+      var slide=0;
+      if(parts[2]&&/^s\d+$/i.test(parts[2]))
+        slide=Math.max(0,parseInt(parts[2].slice(1),10)-1);
+      var st=APP.deckState&&APP.deckState();
+      if(st&&st.name===parts[1]){
+        /* same presentation already open -> just move slide, keeping the
+           current mode (don't reopen the editor / drop out of Present) */
+        if(st.slide!==slide&&APP.deckGo) APP.deckGo(slide);
+        return;
+      }
+      if(APP.deckOpen&&!APP.deckOpen(parts[1],slide)) updateHash();
+    } else if(parts[0]==='doc'&&parts[1]){
+      var open=APP.deckState&&APP.deckState();
+      var ca=APP.shells[APP.active];
+      var curStem=ca&&ca.trace?ca.source:APP.active;   /* symmetric w/ updateHash */
+      if(!open&&curStem===parts[1]) return;
+      if(open&&APP.deckClose) APP.deckClose();
+      if(APP.shells[parts[1]]) activate(parts[1]);
+    }
+  }
+  function tryRoute(){
+    if(!pendingRoute) return;
+    applyHash(pendingRoute);
+    var parts=routeParse(pendingRoute);
+    /* presentations open synchronously; a doc route may wait for its tab to
+       mount (web mode restores notebooks asynchronously) */
+    if(parts[0]!=='doc'||APP.shells[parts[1]]) pendingRoute=null;
+  }
+  APP.applyInitialRoute=function(){
+    routeReady=true;
+    var parts=routeParse(initialHash);
+    if(parts.length&&(parts[0]==='doc'||parts[0]==='pres'))
+      pendingRoute=initialHash;
+    tryRoute();
+    if(!location.hash) updateHash();   /* stamp the default view */
+  };
+  /* a tab mounting later (web restore) satisfies a still-pending route; debounce
+     so it lands AFTER the restore's own mounting settles, not mid-storm */
+  document.addEventListener('sem:shell',function(){
+    if(!pendingRoute) return;
+    if(routeTimer) clearTimeout(routeTimer);
+    routeTimer=setTimeout(function(){
+      applyHash(pendingRoute);pendingRoute=null;},250);
+  });
+  window.addEventListener('hashchange',function(){
+    pendingRoute=null;   /* a real navigation supersedes the initial route */
+    applyHash(location.hash);
+  });
 
   /* ================= per-notebook document behaviors ================= */
   var scrim=$('#scrim');
@@ -4822,7 +4914,7 @@ _DECK_HTML = """
           <button class="dbtn etm" id="fmt-fill"
             title="Fill on/off">Fill</button>
           <button class="dbtn etm" id="fmt-shape"
-            title="Box or ellipse">&#9711;</button>
+            title="Cycle the shape (rectangle, ellipse, star, …)">&#9711;</button>
           <button class="dbtn etm" id="fmt-op"
             title="Cycle transparency">Op</button>
           <button class="dbtn etm" id="fmt-rotl"
@@ -5424,6 +5516,8 @@ body.slide-editing .apptop{display:none;}
 .et-div{width:1px;height:22px;background:#ffffff26;flex:none;margin:0 3px;}
 /* the "+ Shapes" dropdown */
 .sh-drop{position:relative;display:inline-block;}
+#sh-btn[aria-pressed="true"]{background:var(--cyan-deep);
+  border-color:var(--cyan-deep);color:#fff;}
 .sh-menu{position:absolute;top:calc(100% + 5px);left:0;z-index:60;
   background:#16273a;border:1px solid #ffffff26;border-radius:9px;padding:6px;
   display:grid;grid-template-columns:repeat(3,1fr);gap:4px;
@@ -5452,6 +5546,8 @@ body.slide-editing .apptop{display:none;}
   background:none!important;}
 .an-shape-svg{position:absolute;inset:0;width:100%;height:100%;
   overflow:visible;display:block;pointer-events:none;}
+/* var() doesn't resolve in an SVG font-family attribute — set it via CSS */
+.an-shape-svg text,.sh-ico text{font-family:var(--sans);}
 .dbtn.et[aria-pressed="true"]{background:var(--cyan-deep);
   border-color:var(--cyan-deep);color:#fff;}
 .dbtn.etm{padding:5px 9px;}
@@ -6233,8 +6329,7 @@ _DECK_JS = r"""
       tx.setAttribute('text-anchor','middle');
       tx.setAttribute('dominant-baseline','central');
       tx.setAttribute('font-size','104');tx.setAttribute('font-weight','800');
-      tx.setAttribute('font-family','var(--sans)');
-      tx.setAttribute('fill',col);
+      tx.setAttribute('fill',col);   /* font comes from CSS (.an-shape-svg text) */
       tx.textContent=SHAPE_GLYPH[shp];
       svg.appendChild(tx);
     } else {
@@ -7081,7 +7176,7 @@ _DECK_JS = r"""
     show('#fmt-line',kind==='arrow'||kind==='rect');
     show('#fmt-dash',kind==='arrow'||kind==='rect',!!a.dash);
     show('#fmt-fill',kind==='rect',!!a.fill);
-    show('#fmt-shape',kind==='rect',a.shape==='ellipse');
+    show('#fmt-shape',kind==='rect',!!a.shape&&a.shape!=='rect');
     show('#fmt-op',true);
     var opBtn=$('#fmt-op');
     if(opBtn) opBtn.textContent='Op '
@@ -7307,6 +7402,8 @@ _DECK_JS = r"""
     tool=t;
     $$('#edit-tools .et').forEach(function(b){
       b.setAttribute('aria-pressed',(b.dataset.tool===t).toString());});
+    var shb=$('#sh-btn');   /* the Shapes dropdown draws the 'rect' tool */
+    if(shb) shb.setAttribute('aria-pressed',(t==='rect').toString());
     var l=stage.querySelector('.annot-layer');
     if(l) l.className='annot-layer tool-'+t;
     var hint=$('#et-hint');
@@ -7315,7 +7412,8 @@ _DECK_JS = r"""
       :t==='arrow'?'Drag on the slide to draw an arrow'
       :t==='rect'?('Drag on the slide to draw a '
         +(pendingShape==='rect'?'rectangle':pendingShape))
-      :t==='cell'?'Now click a card in your notebook to place it on the slide'
+      :t==='cell'?'Click on the slide to drop a cell frame, then pick a card '
+        +'from your notebook to fill it'
       :'Click an item to select; drag to move; Del removes';
   }
   function deleteSel(){
@@ -7477,6 +7575,7 @@ _DECK_JS = r"""
   function go(n){
     cur=Math.max(0,Math.min(pres.slides.length-1,n));
     refresh();
+    if(window.SemApp&&window.SemApp.updateHash) window.SemApp.updateHash();
   }
 
   /* ---------- create mode: sidebar UI ---------- */
@@ -8220,31 +8319,60 @@ _DECK_JS = r"""
     else if(mode==='edit'){renderCreate();renderSlide();}
     else renderSlide();
   }
+  function routeSync(){
+    if(window.SemApp&&window.SemApp.updateHash) window.SemApp.updateHash();
+  }
   function openDeck(m){
     deckEl.hidden=false;
     var sr=$('#slide-return'); if(sr) sr.hidden=true;
     status();
     setUIMode(m||'view');
+    routeSync();
   }
-  function closeDeck(fromToggle){
+  function closeDeck(){
     try{
       if(document.fullscreenElement)
         document.exitFullscreen().catch(function(){});
     }catch(err){}
     closeVFull();
     deckEl.hidden=true;
-    if(!fromToggle){var sr=$('#slide-return'); if(sr) sr.hidden=true;}
+    var sr=$('#slide-return'); if(sr) sr.hidden=true;
     document.body.classList.remove('deck-open');
     document.body.classList.remove('creating-docs');
     document.body.classList.remove('slide-editing');
     deckEl.classList.remove('creating');
     deckEl.classList.remove('editing');
     renderPresTabs();
+    routeSync();
   }
-  $('#deck-docs').addEventListener('click',closeDeck);
-  $('#dc-close').addEventListener('click',closeDeck);
+  /* ---- URL routing hooks used by the SemApp router (docs side) ---- */
+  window.SemApp.deckState=function(){
+    return deckEl.hidden?null:{name:pres.name,slide:cur};
+  };
+  window.SemApp.deckClose=function(){closeDeck();};
+  window.SemApp.deckGo=function(slide){   /* move slide, keep the current mode */
+    if(deckEl.hidden) return;
+    go(Math.max(0,Math.min(((pres.slides||[]).length||1)-1,slide||0)));
+  };
+  window.SemApp.deckOpen=function(name,slide){
+    if(!name) return false;
+    if(pres.name!==name){
+      if(!(savedByName(name)||loadDraft(name))) return false;
+      lsSet(PFX+'last',name);
+      loadPresentation(name);
+      activePane=-1;
+    }
+    cur=0;
+    if(typeof slide==='number'&&slide>0)
+      cur=Math.max(0,Math.min(((pres.slides||[]).length||1)-1,slide));
+    openDeck('edit');
+    return true;
+  };
+  /* wrap so the click Event isn't forwarded (closeDeck takes no args) */
+  $('#deck-docs').addEventListener('click',function(){closeDeck();});
+  $('#dc-close').addEventListener('click',function(){closeDeck();});
   var prDocs=document.getElementById('pr-docs');
-  if(prDocs) prDocs.addEventListener('click',closeDeck);
+  if(prDocs) prDocs.addEventListener('click',function(){closeDeck();});
   var prNew=document.getElementById('pr-new');
   if(prNew) prNew.addEventListener('click',newPresentation);
   $('#pres-current').addEventListener('click',function(){
@@ -8873,6 +9001,9 @@ _DECK_JS = r"""
 
   status();
   renderPresTabs();
+  /* both IIFEs + their route hooks are now wired — restore the URL's view */
+  if(window.SemApp&&window.SemApp.applyInitialRoute)
+    window.SemApp.applyInitialRoute();
 })();
 """
 
@@ -9915,6 +10046,16 @@ def _self_test() -> None:
     assert 'data-lay="rows"' in out and 'data-lay="title"' in out
     assert 'id="edit-tools"' in out and 'id="dc-edit"' in out
     assert 'id="et-fmt"' in out and 'data-tool="cell"' in out
+    # URL routing: a unique, restorable hash per view (#/doc/<stem>, #/pres/…)
+    assert "function applyHash" in out and "APP.updateHash=updateHash" in out
+    assert "'#/doc/'" in out and "'#/pres/'" in out
+    assert "window.SemApp.deckOpen" in out and "window.SemApp.deckState" in out
+    assert "window.SemApp.deckGo" in out   # move slide without reopening the mode
+    assert "APP.applyInitialRoute" in out and "'hashchange'" in out
+    # in-app nav uses replaceState (no back-stack flood); a late-mounting tab
+    # (web restore) satisfies a still-pending initial route
+    assert "history.replaceState" in out and "pendingRoute" in out
+    assert "document.addEventListener('sem:shell'" in out
     # builder workflow: a presentation opens in the slide EDITOR by default
     assert out.count("openDeck('edit')") >= 2
     # the prominent "+ Notebook cell" button, the "+ Shapes" dropdown, and the

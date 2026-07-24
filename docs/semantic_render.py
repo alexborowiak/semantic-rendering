@@ -52,7 +52,7 @@ Grouping vs stacking, two ways to put several cells under one figure:
 Inference when `display` is absent:
     image output            -> figure
     xarray HTML repr        -> dataset
-    only text / stdout       -> metric (if short) else text
+    any text / stdout / repr -> text (badge "print")
     no output                -> code (collapsed by default)
 
 --------------------------------------------------------------------------
@@ -227,6 +227,11 @@ def _looks_like_xarray(htmltext: str) -> bool:
     return ("xr-" in htmltext) or ("xarray" in htmltext.lower())
 
 
+def _looks_like_dataframe(htmltext: str) -> bool:
+    # pandas styles its HTML table with class="dataframe"
+    return 'class="dataframe"' in htmltext or "class='dataframe'" in htmltext
+
+
 @dataclass
 class RenderedOutput:
     kind: str          # "image" | "xarray" | "html" | "text" | "error"
@@ -236,31 +241,81 @@ class RenderedOutput:
     ot: str = "print"  # output-type slug for the Output-types filter
 
 
+_NUM_RE = re.compile(r"^[-+]?(\d[\d_]*\.?\d*|\.\d+)([eE][-+]?\d+)?j?$")
+_COMPLEX_RE = re.compile(
+    r"^\(?[-+]?(\d[\d_]*\.?\d*|\.\d+)([eE][-+]?\d+)?"
+    r"[-+](\d[\d_]*\.?\d*|\.\d+)([eE][-+]?\d+)?j\)?$")
+
+
+def _has_toplevel_colon(s: str) -> bool:
+    """A ':' at the top level of the outer braces, ignoring string contents.
+    Distinguishes a dict ({'a': 1}) from a set ({'12:00', '13:00'})."""
+    quote = None
+    esc = False
+    depth = 0
+    for ch in s:
+        if quote:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == quote:
+                quote = None
+            continue
+        if ch in "'\"":
+            quote = ch
+        elif ch in "[{(":
+            depth += 1
+        elif ch in "]})":
+            depth -= 1
+        elif ch == ":" and depth == 1:
+            return True
+    return False
+
+
 def _repr_kind(text: str) -> str:
     """Guess the Python type of an execute_result repr, for the finer
-    Output-types filter (numeric / string / list / dict / …).  Falls back to
-    'value' for anything unrecognised; 'print' for empty."""
+    Output-types filter (numeric / string / list / dict / series / …). Only
+    types actually seen are ever surfaced, so this can be as granular as it
+    likes. Falls back to 'value' for anything unrecognised; 'print' for empty."""
     s = text.strip()
     if not s:
         return "print"
     c = s[0]
+    if c == "<":                                   # <function …>, <Foo object …>
+        if s.startswith(("<function", "<built-in function", "<built-in method",
+                         "<bound method", "<lambda")):
+            return "function"
+        if s.startswith("<class "):
+            return "class"
+        if s.startswith("<module "):
+            return "module"
+        return "object"
     if c == "[":
         return "list"
     if c == "{":
-        # dict has ':' before the first closing brace; otherwise it's a set
-        return "dict" if ":" in s.split("}", 1)[0] else "set"
+        # {} is an empty dict; a set has no top-level ':' (quote-aware)
+        return "dict" if (s == "{}" or _has_toplevel_colon(s)) else "set"
     if c == "(":
-        return "tuple"
+        # a full complex number reprs parenthesised, e.g. "(1+2j)"
+        return "numeric" if _COMPLEX_RE.match(s) else "tuple"
     if c in "'\"" or s[:2] in ("b'", 'b"', "r'", 'r"', "f'", 'f"'):
         return "string"
     if s in ("True", "False"):
         return "bool"
     if s == "None":
         return "none"
-    if re.match(r"^[-+]?(\d[\d_]*\.?\d*|\.\d+)([eE][-+]?\d+)?j?$", s):
+    if s.lstrip("+-") in ("inf", "nan"):
         return "numeric"
-    if s.startswith(("array(", "tensor(", "np.", "matrix(", "DataFrame")):
+    if _NUM_RE.match(s):
+        return "numeric"
+    if s.startswith(("array(", "tensor(", "np.", "matrix(")):
         return "array"
+    if "\n" in s:                                  # multi-line reprs
+        if re.search(r"\[\d+ rows? x \d+ columns?\]\s*$", s):
+            return "dataframe"                      # pandas DataFrame text repr
+        if re.search(r"(\n|, )dtype:\s*\S+\s*$", s):
+            return "series"                         # pandas Series text repr
     return "value"
 
 
@@ -300,6 +355,11 @@ def render_outputs(outputs: list[dict]) -> list[RenderedOutput]:
                         "xarray",
                         f'<div class="xr-wrap ot-dataset">{htmltext}</div>',
                         has_xarray=True, ot="dataset"))
+                elif _looks_like_dataframe(htmltext):
+                    rendered.append(RenderedOutput(
+                        "html",
+                        f'<div class="rich ot-dataframe">{htmltext}</div>',
+                        ot="dataframe"))
                 else:
                     rendered.append(RenderedOutput(
                         "html",
@@ -400,8 +460,10 @@ def _infer_kind(item_outputs: list[RenderedOutput]) -> str:
         return "dataset"
     text_like = [o for o in item_outputs if o.kind in ("text", "html", "error")]
     if text_like:
-        total = sum(len(o.payload) for o in text_like)
-        return "metric" if total < 900 else "text"
+        # any printed output is "print" — a bare expression (len(x)), a
+        # print(), a repr. (We used to split short output off as "metric",
+        # but in a notebook that is just a printed value too.)
+        return "text"
     return "code"
 
 
@@ -748,6 +810,75 @@ def _cell_names(code: str) -> tuple[set[str], set[str]]:
     return set(first_def), uses
 
 
+def _mentioned_names(note: "Item", all_defs: set[str]) -> set[str]:
+    """Variable names a markdown note refers to. An inline-code span (`name`)
+    is a strong signal at any length. A BARE word only counts when it is
+    "code-shaped" -- snake_case or containing a digit (e.g. ridge_index,
+    z500) -- so prose like "warm events" or "seasonal cycle" does not match a
+    plain-word variable named `warm` / `seasonal`; those need backticks."""
+    text = f"{note.title}\n{note.caption}"
+    found: set[str] = set()
+    for span in re.findall(r"`([^`]+)`", text):        # `name`, `name.attr`…
+        m = re.match(r"[A-Za-z_]\w*", span.strip())
+        if m and m.group(0) in all_defs:
+            found.add(m.group(0))
+    for n in all_defs:
+        code_shaped = "_" in n or any(c.isdigit() for c in n)
+        if code_shaped and len(n) >= 3 \
+                and re.search(r"\b" + re.escape(n) + r"\b", text):
+            found.add(n)
+    return found
+
+
+def _link_notes_to_chains(doc: Document, cards: list, card_defs: dict,
+                          anc_of: dict, items_by_id: dict, order: dict) -> None:
+    """Link a markdown note into the code trace of every plot whose lineage
+    defines a variable the note names -- so the prose that explains a step
+    travels with the code into that plot's trace (and its dependency graph).
+    Notes are ignored by the presentation trail (it keeps its hasCode filter),
+    so this only enriches the docs 'Plot trace'."""
+    all_defs: set[str] = set()
+    for d in card_defs.values():
+        all_defs |= d
+    if not all_defs:
+        return
+    definers: dict[str, list] = {}
+    for _, it in cards:
+        for n in card_defs[id(it)]:
+            definers.setdefault(n, []).append(it)
+    anchor_pos: dict[str, int] = {}
+    pos = 0
+    for sec in doc.sections:
+        for it in sec.items:
+            anchor_pos[it.anchor or it.item_id] = pos
+            pos += 1
+    notes: list[tuple] = []
+    for sec in doc.sections:
+        for it in sec.items:
+            if not it.is_note:
+                continue
+            names = _mentioned_names(it, all_defs)
+            if not names:
+                continue
+            src_ids = {id(c) for n in names for c in definers.get(n, [])}
+            it.chain = [items_by_id[i].anchor or items_by_id[i].item_id
+                        for i in sorted(src_ids, key=lambda i: order.get(i, 0))]
+            notes.append((it, names))
+    if not notes:
+        return
+    for _, it in cards:
+        lineage_names = set(card_defs[id(it)])
+        for aid in anc_of[id(it)]:
+            lineage_names |= card_defs.get(aid, set())
+        extra = [nt for (nt, names) in notes if names & lineage_names]
+        if not extra:
+            continue
+        merged = list(it.chain) + [
+            (nt.anchor or nt.item_id) for nt in extra
+            if (nt.anchor or nt.item_id) not in it.chain]
+        it.chain = sorted(merged, key=lambda a: anchor_pos.get(a, 0))
+
+
 def _build_chains(doc: Document) -> None:
     """Attach to every card the ordered chain of upstream cards feeding it.
 
@@ -755,7 +886,8 @@ def _build_chains(doc: Document) -> None:
     card that last assigned each name this card reads) and declared
     `depends:` ids. The transitive closure, in document order, becomes
     `item.chain` -- the full "open data -> transform -> plot" story shown
-    under a figure's Show code.
+    under a figure's Show code. A final pass also links markdown notes that
+    name a variable into the chains that define it.
     """
     cards: list[tuple[int, Item]] = []
     for sec in doc.sections:
@@ -769,6 +901,7 @@ def _build_chains(doc: Document) -> None:
     items_by_id = {id(it): it for _, it in cards}
 
     deps: dict[int, set[int]] = {id(it): set() for _, it in cards}
+    card_defs: dict[int, set[str]] = {id(it): set() for _, it in cards}
     last: dict[str, Item] = {}          # name -> card that last assigned it
     for _, it in cards:
         for m in sorted(it.members, key=lambda m: m["idx"]):
@@ -779,6 +912,7 @@ def _build_chains(doc: Document) -> None:
                     deps[id(it)].add(id(src))
             for n in defs:
                 last[n] = it
+            card_defs[id(it)] |= defs
         for d in it.depends:
             src = by_node.get(d)
             if src is not None and src is not it:
@@ -790,11 +924,15 @@ def _build_chains(doc: Document) -> None:
                 seen.add(p)
                 ancestors(p, seen)
 
+    anc_of: dict[int, set[int]] = {}
     for _, it in cards:
         seen: set[int] = set()
         ancestors(id(it), seen)
+        anc_of[id(it)] = seen
         it.chain = [items_by_id[i].anchor or items_by_id[i].item_id
                     for i in sorted(seen, key=lambda i: order.get(i, 0))]
+
+    _link_notes_to_chains(doc, cards, card_defs, anc_of, items_by_id, order)
 
 
 def parse_notebook(nb: dict, title: str | None = None) -> Document:
@@ -1253,8 +1391,8 @@ def md_to_html(text: str) -> str:
 
 _BADGE = {
     "figure": "figure", "dataset": "dataset", "transform": "transform",
-    "diagnostic": "diagnostic", "metric": "metric", "text": "print",
-    "note": "note", "code": "code",
+    "diagnostic": "diagnostic", "metric": "print", "text": "print",
+    "note": "markdown", "code": "code",
 }
 
 
@@ -1427,15 +1565,27 @@ def render_item(item: Item) -> str:
 
 def render_nav(doc: Document) -> str:
     parts = ['<nav class="nav" aria-label="Analysis sections">']
-    # key: one entry per item kind (incl. code subtypes) that occurs — shown
-    # at the TOP of the sidebar
+    # key: one entry per item kind (incl. code subtypes) present, GROUPED
+    # (markdown | plots | code | output) with a divider between groups — so the
+    # two "print" dots (a CODE cell that prints vs a printed VALUE) read apart.
+    # Shown at the TOP of the sidebar.
     labels = {"k-figure": "figure", "k-dataset": "dataset",
-              "k-transform": "transform", "k-metric": "metric",
-              "k-note": "note", "k-print": "print", "k-code": "code",
+              "k-transform": "transform", "k-metric": "print",
+              "k-note": "markdown", "k-print": "print", "k-code": "code",
               "ckmain-imports": "imports", "ckmain-function": "function",
               "ckmain-data": "data", "ckmain-constant": "constant",
               "ckmain-settings": "settings", "ckmain-plotting": "plotting",
               "ckmain-print": "print"}
+
+    def _key_group(kc: str) -> str:
+        if kc == "k-note":
+            return "markdown"
+        if kc == "k-figure":
+            return "plots"
+        if kc in ("k-dataset", "k-print", "k-metric"):
+            return "output"
+        return "code"        # ckmain-* + k-code + k-transform
+
     seen: list[str] = []
     for s in doc.sections:
         for it in s.items:
@@ -1446,9 +1596,23 @@ def render_nav(doc: Document) -> str:
                 seen.append(kc)
     if seen:
         parts.append('<div class="navkey"><span class="navkey-h">key</span>')
-        for kc in seen:
-            parts.append(f'<span class="nk {kc}"><span class="dot"></span>'
-                         f'{labels.get(kc, kc)}</span>')
+        first = True
+        for grp in ("markdown", "plots", "code", "output"):
+            kcs = [kc for kc in seen if _key_group(kc) == grp]
+            if not kcs:
+                continue
+            if not first:
+                parts.append('<span class="navkey-div" aria-hidden="true">'
+                             '</span>')
+            first = False
+            shown: set[str] = set()   # one dot per label within a group
+            for kc in kcs:
+                lab = labels.get(kc, kc)
+                if lab in shown:       # e.g. k-metric + k-print both "print"
+                    continue
+                shown.add(lab)
+                parts.append(f'<span class="nk {kc}"><span class="dot">'
+                             f'</span>{lab}</span>')
         parts.append('</div>')
     for s in doc.sections:
         figs = sum(1 for it in s.items if it.kind in ("figure", "diagnostic"))
@@ -1780,6 +1944,10 @@ body.light .navitem.ckmain-print .dot,body.light .nk.ckmain-print .dot{
   font-family:var(--mono);color:var(--chrome-ink-2);}
 .nk .dot{width:6px;height:6px;border-radius:2px;flex:none;
   background:var(--chrome-ink-2);}
+/* a thin rule marking the markdown | plots | code | output groups */
+.navkey-div{width:1px;height:11px;flex:none;align-self:center;
+  background:var(--chrome-line);margin:0 -3px;}
+body.light .navkey-div{background:var(--line);}
 
 /* ---------- rail graph (signature) ---------- */
 .railgraph{border-top:1px solid var(--chrome-line);padding:14px 14px 20px;
@@ -1956,7 +2124,9 @@ body:not(.light) .docbar-p{color:#8ba0b2;}
   font-size:11px;color:var(--ink-3);letter-spacing:.02em;}
 .cb-out.part-fold:hover::before{color:var(--cyan-deep);}
 .cb-out.part-fold.part-open{cursor:default;border:none;padding:0;}
-.cb-out.part-fold.part-open>*{display:revert;}
+/* :not(.ot-off) so a child hidden by the Output-types filter stays hidden
+   even when the collapsed output is opened */
+.cb-out.part-fold.part-open>*:not(.ot-off){display:revert;}
 .cb-out.part-fold.part-open::before{display:none;}
 
 .cardhead{display:flex;align-items:center;gap:10px;margin-bottom:12px;
@@ -2279,15 +2449,17 @@ several cells under one figure (see the README for details)</td></tr>
 button &mdash; exactly one is active, so that button is always the way
 back. <b>New</b> starts one; <b>&#171;</b> shrinks or hides the
 rail.</li>
-<li>In the <b>builder</b>, pick a slide layout (diagrams: full, halves,
-rows, quarters, a <b>title slide</b>, or a <b>blank canvas</b>), click
-a pane, then <b>click any card in the document</b> to place it &mdash;
-from <i>any</i> open tab, so one deck can mix several notebooks.</li>
-<li><b>&#9998; Edit slide</b> opens a PowerPoint-style editor:
-<b>+ Text</b>, <b>+ Arrow</b>, <b>+ Box</b>, and <b>+ Cell</b> &mdash;
-a draggable, resizable frame that holds any notebook card (click it,
-pick a card, swap later with &#8644; Replace). Select anything for
-colours, text size, line thickness, dash and fill.</li>
+<li>A presentation opens straight in the <b>slide editor</b>. Add
+content with <b>+ Notebook cell</b> &mdash; a draggable, resizable frame
+that holds any notebook card: drop it on the slide, then click a card in
+your notebook (from <i>any</i> open tab, so one deck can mix several
+notebooks) to fill it; swap later with &#8644; Replace. Pick a slide
+layout from the diagrams (full, halves, rows, quarters, a
+<b>title slide</b>, or a <b>blank canvas</b>).</li>
+<li>The editor is PowerPoint-style: <b>+ Text</b>, <b>+ Arrow</b>, and
+<b>+ Shapes</b> (rectangle, ellipse, star, arrow, cloud, and more).
+Select anything for colours, text size, line thickness, dash and fill;
+use <b>Notebook view</b> to scroll your cells and jump back.</li>
 <li><b>&#9654; Present</b> plays full screen. Arrow keys &larr;/&rarr;
 move through the story; on slides with code, &darr; descends the
 <b>code trail</b> &mdash; every cell that made the figure, one per
@@ -2364,17 +2536,23 @@ body.light .appbar-div{background:#00000022;}
   align-items:center;}
 .appbar .toggle:hover{border-color:var(--cyan);color:#fff;}
 .appbar .toggle.tv.off{color:#69788a;}
-.appbar .menubtn{display:inline-flex;align-items:center;
-  justify-content:center;width:34px;height:34px;
+/* the sidebar toggle now lives on the tab line, next to Open + the tabs
+   (the doc-navigation controls), not up among the filters */
+.tabsrow .menubtn{display:inline-flex;align-items:center;
+  justify-content:center;width:30px;height:29px;margin:7px 2px 0 8px;
   border:1px solid #ffffff22;background:none;
-  border-radius:var(--rad);cursor:pointer;flex:none;}
-.appbar .menubtn span,.appbar .menubtn span::before,
-.appbar .menubtn span::after{content:"";display:block;width:15px;
+  border-radius:8px;cursor:pointer;flex:none;}
+.tabsrow .menubtn:hover{border-color:var(--cyan);}
+.tabsrow .menubtn span,.tabsrow .menubtn span::before,
+.tabsrow .menubtn span::after{content:"";display:block;width:14px;
   height:2px;background:#cdd9e3;position:relative;}
-.appbar .menubtn span::before{position:absolute;top:-5px;}
-.appbar .menubtn span::after{position:absolute;top:5px;}
-.appbar .menubtn[aria-pressed="true"]{background:#39a9c022;
+.tabsrow .menubtn span::before{position:absolute;top:-5px;}
+.tabsrow .menubtn span::after{position:absolute;top:5px;}
+.tabsrow .menubtn[aria-pressed="true"]{background:#39a9c022;
   border-color:#39a9c088;}
+body.light .tabsrow .menubtn{border-color:var(--line);}
+body.light .tabsrow .menubtn span,body.light .tabsrow .menubtn span::before,
+body.light .tabsrow .menubtn span::after{background:var(--ink-2);}
 /* Open lives on the tab line now (a prominent + at the start), so it reads
    as "add a document tab" rather than getting lost among the filter toggles */
 .tabrow-open{font-family:var(--mono);font-size:11px;letter-spacing:.04em;
@@ -2724,6 +2902,12 @@ body.creating-docs .apptop{
 .ckf-dot.ot-sw-none{background:#7a8794;}
 .ckf-dot.ot-sw-array{background:#5b7589;}
 .ckf-dot.ot-sw-value{background:#8a93a0;}
+.ckf-dot.ot-sw-dataframe{background:#4d90c0;}
+.ckf-dot.ot-sw-series{background:#5aa0b8;}
+.ckf-dot.ot-sw-function{background:#46a892;}
+.ckf-dot.ot-sw-class{background:#9a7cc0;}
+.ckf-dot.ot-sw-module{background:#8a6d4a;}
+.ckf-dot.ot-sw-object{background:#8a93a0;}
 .ckf-empty{color:#7e93a4;font-size:11px;padding:8px;}
 #ck-filter-btn.on,#ot-filter-btn.on{border-color:var(--cyan);color:#fff;
   background:#39a9c022;}
@@ -2750,10 +2934,6 @@ body.light .appbar .toggle{border-color:var(--line);background:#fff;
 body.light .appbar .toggle:hover{border-color:var(--cyan);
   color:var(--ink);}
 body.light .appbar .toggle.tv.off{color:var(--ink-3);}
-body.light .appbar .menubtn{border-color:var(--line);}
-body.light .appbar .menubtn span,
-body.light .appbar .menubtn span::before,
-body.light .appbar .menubtn span::after{background:var(--ink-2);}
 body.light .tabsrow{background:#e9eef3;}
 body.light .tab{border-color:var(--line);background:#00000006;
   color:var(--ink-3);}
@@ -3112,10 +3292,100 @@ _JS = r"""
     tabList().forEach(function(s){APP.shells[s].el.hidden=(s!==stem);});
     renderTabs();
     renderRawBtn();
+    updateHash();
     document.dispatchEvent(new CustomEvent('sem:activate',
       {detail:{stem:stem}}));
   }
   APP.activate=activate;
+
+  /* ================= URL routing: a unique hash per view ================
+     #/doc/<stem>  a document tab   #/pres/<name>[/s<n>]  a presentation slide.
+     Bookmarkable + survives reload + back/forward, in every mode (hash only,
+     so no server routing needed). The deck registers deckState/deckOpen. */
+  var initialHash=location.hash, routeReady=false, pendingRoute=null,
+      routeTimer=null;
+  function setHash(h){
+    if(location.hash===h||(!location.hash&&h==='#/')) return;
+    /* replaceState (not location.hash=) so in-app navigation NEVER floods the
+       back stack — the URL always mirrors the view, bookmarkable + reloadable,
+       and Back leaves the app cleanly rather than stepping through tab switches */
+    try{ if(history.replaceState)
+           history.replaceState(null,'',
+             location.pathname+location.search+(h==='#/'?'':h));
+         else location.hash=h; }catch(e){}
+  }
+  function routeParse(hash){
+    return String(hash||'').replace(/^#\/?/,'').split('/')
+      .filter(Boolean).map(function(p){
+        try{return decodeURIComponent(p);}catch(e){return p;}});
+  }
+  function updateHash(){
+    if(!routeReady) return;
+    var d=APP.deckState&&APP.deckState();
+    if(d&&d.name){
+      setHash('#/pres/'+encodeURIComponent(d.name)
+        +(d.slide!=null?('/s'+(d.slide+1)):''));
+      return;
+    }
+    var a=APP.active&&APP.shells[APP.active];
+    var stem=a&&a.trace?a.source:APP.active;   /* a trace tab -> its source */
+    setHash(stem?('#/doc/'+encodeURIComponent(stem)):'#/');
+  }
+  APP.updateHash=updateHash;
+  /* idempotent: applying the hash for the view already showing is a no-op,
+     so a programmatic setHash -> hashchange never loops or double-renders */
+  function applyHash(hash){
+    var parts=routeParse(hash);
+    if(!parts.length) return;
+    if(parts[0]==='pres'&&parts[1]){
+      var slide=0;
+      if(parts[2]&&/^s\d+$/i.test(parts[2]))
+        slide=Math.max(0,parseInt(parts[2].slice(1),10)-1);
+      var st=APP.deckState&&APP.deckState();
+      if(st&&st.name===parts[1]){
+        /* same presentation already open -> just move slide, keeping the
+           current mode (don't reopen the editor / drop out of Present) */
+        if(st.slide!==slide&&APP.deckGo) APP.deckGo(slide);
+        return;
+      }
+      if(APP.deckOpen&&!APP.deckOpen(parts[1],slide)) updateHash();
+    } else if(parts[0]==='doc'&&parts[1]){
+      var open=APP.deckState&&APP.deckState();
+      var ca=APP.shells[APP.active];
+      var curStem=ca&&ca.trace?ca.source:APP.active;   /* symmetric w/ updateHash */
+      if(!open&&curStem===parts[1]) return;
+      if(open&&APP.deckClose) APP.deckClose();
+      if(APP.shells[parts[1]]) activate(parts[1]);
+    }
+  }
+  function tryRoute(){
+    if(!pendingRoute) return;
+    applyHash(pendingRoute);
+    var parts=routeParse(pendingRoute);
+    /* presentations open synchronously; a doc route may wait for its tab to
+       mount (web mode restores notebooks asynchronously) */
+    if(parts[0]!=='doc'||APP.shells[parts[1]]) pendingRoute=null;
+  }
+  APP.applyInitialRoute=function(){
+    routeReady=true;
+    var parts=routeParse(initialHash);
+    if(parts.length&&(parts[0]==='doc'||parts[0]==='pres'))
+      pendingRoute=initialHash;
+    tryRoute();
+    if(!location.hash) updateHash();   /* stamp the default view */
+  };
+  /* a tab mounting later (web restore) satisfies a still-pending route; debounce
+     so it lands AFTER the restore's own mounting settles, not mid-storm */
+  document.addEventListener('sem:shell',function(){
+    if(!pendingRoute) return;
+    if(routeTimer) clearTimeout(routeTimer);
+    routeTimer=setTimeout(function(){
+      applyHash(pendingRoute);pendingRoute=null;},250);
+  });
+  window.addEventListener('hashchange',function(){
+    pendingRoute=null;   /* a real navigation supersedes the initial route */
+    applyHash(location.hash);
+  });
 
   /* ================= per-notebook document behaviors ================= */
   var scrim=$('#scrim');
@@ -3286,12 +3556,19 @@ _JS = r"""
   /* advanced OUTPUT-type filter: hide specific printed-output kinds (print,
      dataset, result, error) — like the code-type filter, but for output */
   var otHidden={};
-  var OT_TYPES=['print','dataset','result','error'];
+  /* preferred ordering; any other slug present (a finer repr type) is appended
+     after these so the menu never drops a type it doesn't already know */
+  var OT_TYPES=['print','numeric','string','bool','none','list','tuple','set',
+    'dict','array','series','dataframe','dataset','function','class','module',
+    'object','value','result','error'];
   function presentOtTypes(){
     var set={};
     $$('.nbshell .cb-out[data-ot]').forEach(function(c){
       c.dataset.ot.split(' ').forEach(function(t){if(t)set[t]=1;});});
-    return OT_TYPES.filter(function(t){return set[t];});
+    var out=OT_TYPES.filter(function(t){return set[t];});
+    Object.keys(set).forEach(function(t){
+      if(OT_TYPES.indexOf(t)<0) out.push(t);});   /* unknown slugs still show */
+    return out;
   }
   function renderOtMenu(){
     var m=$('#ot-filter-menu'); if(!m) return;
@@ -4567,18 +4844,24 @@ _DECK_HTML = """
     </aside>
     <div class="deck-stagewrap" id="deck-stagewrap">
       <div class="edit-tools" id="edit-tools" hidden>
-        <span class="et-label">edit slide</span>
+        <button class="dbtn et et-bigcell" data-tool="cell"
+          aria-pressed="false"
+          title="Drop a notebook card onto the slide — you pick which one from
+ your notebook">&#43; Notebook cell</button>
+        <span class="et-div" aria-hidden="true"></span>
         <button class="dbtn et" data-tool="select"
           aria-pressed="true">Select</button>
         <button class="dbtn et" data-tool="text" aria-pressed="false">
           + Text</button>
         <button class="dbtn et" data-tool="arrow" aria-pressed="false">
           + Arrow</button>
-        <button class="dbtn et" data-tool="rect" aria-pressed="false">
-          + Box</button>
-        <button class="dbtn et" data-tool="cell" aria-pressed="false"
-          title="A resizable frame holding any notebook card">
-          + Cell</button>
+        <span class="sh-drop" id="sh-drop">
+          <button class="dbtn" id="sh-btn" aria-haspopup="true"
+            aria-expanded="false"
+            title="Draw a shape (rectangle, ellipse, arrow, star, …)">
+            + Shapes &#9662;</button>
+          <div class="sh-menu" id="sh-menu" hidden></div>
+        </span>
         <span class="et-fmt" id="et-fmt" hidden>
           <span class="fmt-lab" id="fmt-txlab" hidden>T</span>
           <button class="sw" data-c="#ff6b57"
@@ -4631,7 +4914,7 @@ _DECK_HTML = """
           <button class="dbtn etm" id="fmt-fill"
             title="Fill on/off">Fill</button>
           <button class="dbtn etm" id="fmt-shape"
-            title="Box or ellipse">&#9711;</button>
+            title="Cycle the shape (rectangle, ellipse, star, …)">&#9711;</button>
           <button class="dbtn etm" id="fmt-op"
             title="Cycle transparency">Op</button>
           <button class="dbtn etm" id="fmt-rotl"
@@ -4650,6 +4933,9 @@ _DECK_HTML = """
         </span>
         <span class="et-hint" id="et-hint"></span>
         <span class="deck-spring"></span>
+        <button class="dbtn viewtoggle" id="et-notebook"
+          title="Switch to the notebook to scroll your cells — come back to the
+ slide any time">&#9636; Notebook view</button>
         <button class="dbtn" id="et-del" disabled
           title="Delete the selected item (Del)">Delete</button>
         <button class="dbtn primary" id="et-done"
@@ -4689,6 +4975,8 @@ _DECK_HTML = """
   <span class="deck-spring"></span>
   <button class="dbtn" id="pick-cancel">Cancel (Esc)</button>
 </div>
+<button class="slide-return" id="slide-return" hidden
+  title="Back to editing your slide">&#9645; Back to slide</button>
 """
 
 _DECK_CSS = r"""
@@ -4767,9 +5055,11 @@ body.deck-open{overflow:hidden;}
   letter-spacing:.18em;text-transform:uppercase;color:#7e93a4;
   text-align:center;display:flex;gap:10px;align-items:center;
   justify-content:center;flex-wrap:wrap;}
-.vo-xall,.vo-fbtn{font-family:var(--mono);font-size:10px;letter-spacing:.06em;
+/* match the docs top-bar toggles so the trail feels part of the same tool */
+.vo-xall,.vo-fbtn{font-family:var(--mono);font-size:11px;letter-spacing:.04em;
   text-transform:none;background:#ffffff0a;border:1px solid #ffffff22;
-  color:#cdd9e3;border-radius:5px;padding:3px 9px;cursor:pointer;}
+  color:#cdd9e3;border-radius:var(--rad);padding:6px 12px;cursor:pointer;
+  display:inline-flex;align-items:center;gap:7px;transition:all .15s;}
 .vo-xall:hover,.vo-fbtn:hover{border-color:var(--cyan);color:#fff;}
 /* the trail's Code-types / Output-types filter dropdowns */
 .vo-fdrop{position:relative;display:inline-block;}
@@ -4804,8 +5094,23 @@ body.deck-open{overflow:hidden;}
 .vo-sec{font-family:var(--mono);font-size:10px;font-weight:600;
   letter-spacing:.12em;text-transform:uppercase;color:#dbe7ef;
   padding:8px 2px 4px;margin-top:6px;
-  border-bottom:1px solid #ffffff1f;}
+  border-bottom:1px solid #ffffff1f;
+  display:flex;align-items:center;gap:7px;}
 .vo-col>.vo-sec:first-of-type,.vo-col-h+.vo-sec{margin-top:0;}
+/* section collapse chevron + hide eye (mirror the docs sidebar/section head) */
+.vo-sec-chev{flex:none;font-size:11px;line-height:1;color:#7e93a4;
+  cursor:pointer;transition:transform .15s,color .15s;}
+.vo-sec-chev:hover{color:#cdd9e3;}
+.vo-sec.collapsed .vo-sec-chev{transform:rotate(-90deg);}
+.vo-sec-lab{flex:1;min-width:0;cursor:pointer;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;}
+.vo-sec-eye{flex:none;font-size:11px;line-height:1;color:#7e93a4;
+  cursor:pointer;opacity:0;padding:1px 4px;border-radius:4px;
+  transition:opacity .12s,color .12s,background .12s;}
+.vo-sec:hover .vo-sec-eye{opacity:.65;}
+.vo-sec-eye:hover{opacity:1;color:#fff;background:#ffffff14;}
+.vo-sec-body{display:flex;flex-direction:column;gap:8px;}
+.vo-sec-body.vo-sec-fold{display:none;}
 .vo-subsec{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;
   color:#8ba0b2;padding:5px 2px 2px;}
 .vo-step{display:flex;flex-direction:column;background:#12202e;
@@ -4855,7 +5160,7 @@ body.deck-open{overflow:hidden;}
   display:flex;flex-direction:column;min-width:0;
   scroll-snap-align:start;}
 .vtrace{scroll-snap-align:start;display:flex;flex-direction:column;
-  gap:14px;padding:26px 0 60px;min-height:70%;}
+  gap:14px;padding:64px 0 60px;min-height:70%;}   /* top clears the ↑ arrow */
 .vtrace .vo-groups{flex:none;align-items:flex-start;}
 .vtrace .vo-col{overflow:visible;}
 .deck-codepill{position:absolute;left:50%;transform:translateX(-50%);
@@ -5201,6 +5506,48 @@ body.slide-editing .apptop{display:none;}
 .et-label{font-family:var(--mono);font-size:10px;letter-spacing:.18em;
   text-transform:uppercase;color:var(--amber);}
 .et-hint{font-size:11px;color:#7e93a4;}
+/* the prominent "+ Notebook cell" button — the main way to add content */
+.dbtn.et-bigcell{background:var(--cyan);border-color:var(--cyan);color:#fff;
+  font-weight:700;font-size:13px;padding:9px 16px;letter-spacing:.01em;
+  box-shadow:0 2px 10px #39a9c04d;}
+.dbtn.et-bigcell:hover{background:var(--cyan-deep);border-color:var(--cyan-deep);}
+.dbtn.et-bigcell[aria-pressed="true"]{background:var(--cyan-deep);
+  box-shadow:0 0 0 2px #bfeaf5 inset;}
+.et-div{width:1px;height:22px;background:#ffffff26;flex:none;margin:0 3px;}
+/* the "+ Shapes" dropdown */
+.sh-drop{position:relative;display:inline-block;}
+#sh-btn[aria-pressed="true"]{background:var(--cyan-deep);
+  border-color:var(--cyan-deep);color:#fff;}
+.sh-menu{position:absolute;top:calc(100% + 5px);left:0;z-index:60;
+  background:#16273a;border:1px solid #ffffff26;border-radius:9px;padding:6px;
+  display:grid;grid-template-columns:repeat(3,1fr);gap:4px;
+  box-shadow:0 14px 38px #0009;width:210px;}
+.sh-menu[hidden]{display:none;}
+.sh-opt{display:flex;flex-direction:column;align-items:center;gap:3px;
+  background:none;border:1px solid transparent;border-radius:7px;
+  padding:7px 4px 5px;cursor:pointer;color:#c9d6e2;font-family:var(--sans);}
+.sh-opt:hover{background:#39a9c022;border-color:#39a9c066;color:#fff;}
+.sh-ico{width:26px;height:22px;display:block;}
+.sh-ico path,.sh-ico rect,.sh-ico ellipse,.sh-ico text{transition:fill .1s;}
+.sh-opt-t{font-size:9.5px;letter-spacing:.02em;}
+.dbtn.viewtoggle{border-color:#39a9c05c;color:#8fd4e4;}
+.dbtn.viewtoggle:hover{border-color:var(--cyan);color:#fff;
+  background:#39a9c01e;}
+/* the floating "back to slide" toggle shown while scrolling the notebook */
+.slide-return{position:fixed;left:calc(var(--presrail-w) + 16px);bottom:20px;
+  z-index:130;font-family:var(--sans);font-size:13px;font-weight:600;
+  background:var(--cyan);border:1px solid var(--cyan);color:#fff;
+  border-radius:22px;padding:10px 18px;cursor:pointer;
+  box-shadow:0 8px 26px #0007;}
+.slide-return:hover{background:var(--cyan-deep);}
+.slide-return[hidden]{display:none;}
+/* SVG shapes fill their frame; the div carries no border/box for these */
+.an-rect.an-svgshape{border:none!important;border-radius:0;
+  background:none!important;}
+.an-shape-svg{position:absolute;inset:0;width:100%;height:100%;
+  overflow:visible;display:block;pointer-events:none;}
+/* var() doesn't resolve in an SVG font-family attribute — set it via CSS */
+.an-shape-svg text,.sh-ico text{font-family:var(--sans);}
 .dbtn.et[aria-pressed="true"]{background:var(--cyan-deep);
   border-color:var(--cyan-deep);color:#fff;}
 .dbtn.etm{padding:5px 9px;}
@@ -5281,7 +5628,22 @@ ul.an-ul li{margin:.18em 0;white-space:pre-wrap;}
 .an-cell{position:absolute;background:#0e1926;
   border:1.5px solid #39a9c05c;border-radius:10px;overflow:hidden;
   display:flex;flex-direction:column;}
-.deck.editing .an-cell{cursor:move;}
+/* edit mode: an UNSELECTED frame is just its content — transparent (so it
+   never blocks what's behind), no border, no title header. The border, title,
+   Replace and part-picker all return only when the frame is SELECTED, so you
+   can read the slide as it will present. */
+.deck.editing .an-cell{cursor:move;background:none;border-color:transparent;}
+.deck.editing .an-cell.sel{border-color:var(--cyan);background:#0b141d88;}
+/* an EMPTY frame keeps its dashed dark placeholder box (a card goes here) */
+.deck.editing .an-cell.empty{background:#0e192699;border-color:#39a9c05c;}
+/* the title header is an OVERLAY (out of flow) shown only when selected, so
+   selecting a frame never reflows/shrinks the figure underneath it */
+.deck.editing .an-cell .an-cellhead,
+.pane.filled .an-cellhead{position:absolute;top:0;left:0;right:0;z-index:2;
+  display:none;padding:7px 30px 10px 12px;
+  background:linear-gradient(#0b141de0,#0b141d00);}
+.deck.editing .an-cell.sel .an-cellhead,
+.pane.filled.active .an-cellhead{display:flex;}
 .deck:not(.editing) .an-cell.empty{display:none;}
 /* clean playback: a frame is just its content — no header title, no
    badge, no frame border (the editor/builder keep them for orientation) */
@@ -5343,7 +5705,7 @@ ul.an-ul li{margin:.18em 0;white-space:pre-wrap;}
   background:#0e1926ee;border:1px solid #39a9c066;border-radius:6px;
   color:#7fd0e0;font-family:var(--mono);font-size:10px;padding:4px 9px;
   cursor:pointer;}
-.deck.editing .an-cell:hover .an-cellbtn,
+/* Replace shows only for the SELECTED frame (not on hover) — declutter */
 .deck.editing .an-cell.sel .an-cellbtn{display:block;}
 .an-cellbtn:hover{color:#fff;border-color:var(--cyan);}
 /* which part of a cell a frame shows: code / figure / output */
@@ -5354,10 +5716,9 @@ ul.an-ul li{margin:.18em 0;white-space:pre-wrap;}
    it never covers the title header or the part badge at the top */
 .cellparts{position:absolute;bottom:5px;left:5px;right:5px;z-index:5;
   display:none;gap:3px;flex-wrap:wrap;justify-content:center;}
-.deck.editing .an-cell:hover .cellparts,
+/* the part-picker shows only for the SELECTED frame (not on hover) */
 .deck.editing .an-cell.sel .cellparts,
-.pane.filled:hover .cellparts,.pane.filled.active .cellparts{
-  display:flex;}
+.pane.filled.active .cellparts{display:flex;}
 .cellpartbtn{font-family:var(--mono);font-size:9.5px;letter-spacing:.04em;
   background:#0e1926ee;border:1px solid #ffffff2b;border-radius:5px;
   color:#c9d6e2;padding:3px 7px;cursor:pointer;line-height:1;}
@@ -5913,7 +6274,9 @@ _DECK_JS = r"""
     var steps=[],seen={};
     (it.chain||[]).forEach(function(anchor){
       var up=ITEMS[nsKey(it.nb,anchor)];
-      if(up&&up.hasCode&&!seen[up.ns]){seen[up.ns]=1;steps.push(up);}
+      /* markdown notes that name a lineage variable ride along in the trace */
+      if(up&&(up.hasCode||up.kind==='note')&&!seen[up.ns]){
+        seen[up.ns]=1;steps.push(up);}
     });
     if(it.hasCode&&!seen[it.ns]) steps.push(it);
     return {it:it,steps:steps,color:TRACE_COLORS[0]};
@@ -5925,13 +6288,73 @@ _DECK_JS = r"""
     settings:'#5b7589',plotting:'#39a9c0',print:'#cf9a4e',code:'#8ba0b2'};
   function nodeColor(st){
     if(st.kind==='figure'||st.kind==='diagnostic') return NODE_FILL.figure;
+    if(st.kind==='note') return NODE_FILL.note;
     var cks=st.codeKinds||[st.codeKind||'code'];
     return NODE_FILL[cks[0]]||NODE_FILL[st.kind]||'#8ba0b2';
   }
   var SVGNS='http://www.w3.org/2000/svg';
+  /* ---- shapes for the "+ Shapes" tool. Geometric ones are SVG <path>s in a
+     0..100 box (stretched to the frame, non-scaling stroke); !/? are glyphs.
+     'rect' + 'ellipse' stay CSS-drawn (see the an-rect renderer). ---- */
+  var SHAPE_PATHS={
+    triangle:'M50 6 L95 92 L5 92 Z',
+    diamond:'M50 4 L96 50 L50 96 L4 50 Z',
+    pentagon:'M50 5 L95 39 L77 93 L23 93 L5 39 Z',
+    hexagon:'M27 6 H73 L97 50 L73 94 H27 L3 50 Z',
+    star:'M50 3 L61 37 H97 L68 59 L79 95 L50 73 L21 95 L32 59 L3 37 H39 Z',
+    cross:'M37 5 H63 V37 H95 V63 H63 V95 H37 V63 H5 V37 H37 Z',
+    arrow:'M5 36 H60 V18 L96 50 L60 82 V64 H5 Z',
+    heart:'M50 90 C6 56 12 16 50 40 C88 16 94 56 50 90 Z',
+    cloud:'M30 82 C12 82 6 58 24 52 C20 30 52 22 58 38 '
+      +'C72 26 92 40 84 56 C98 58 96 82 78 82 Z',
+    bubble:'M8 8 H92 V66 H44 L24 90 V66 H8 Z',
+    lightning:'M58 4 L20 56 H46 L38 96 L82 40 H54 Z'
+  };
+  var SHAPE_GLYPH={exclaim:'!',question:'?'};
+  /* menu order + short labels */
+  var SHAPE_LIST=[
+    ['rect','Rectangle'],['ellipse','Ellipse'],['triangle','Triangle'],
+    ['diamond','Diamond'],['pentagon','Pentagon'],['hexagon','Hexagon'],
+    ['star','Star'],['cross','Plus'],['arrow','Arrow'],['heart','Heart'],
+    ['cloud','Cloud'],['bubble','Speech'],['lightning','Bolt'],
+    ['exclaim','Exclaim'],['question','Question']];
+  function drawShapeSvg(shp,col,sw,dash,fill){
+    var svg=document.createElementNS(SVGNS,'svg');
+    svg.setAttribute('class','an-shape-svg');
+    svg.setAttribute('viewBox','0 0 100 100');
+    if(SHAPE_GLYPH[shp]){
+      svg.setAttribute('preserveAspectRatio','xMidYMid meet');
+      var tx=document.createElementNS(SVGNS,'text');
+      tx.setAttribute('x','50');tx.setAttribute('y','54');
+      tx.setAttribute('text-anchor','middle');
+      tx.setAttribute('dominant-baseline','central');
+      tx.setAttribute('font-size','104');tx.setAttribute('font-weight','800');
+      tx.setAttribute('fill',col);   /* font comes from CSS (.an-shape-svg text) */
+      tx.textContent=SHAPE_GLYPH[shp];
+      svg.appendChild(tx);
+    } else {
+      svg.setAttribute('preserveAspectRatio','none');
+      var p=document.createElementNS(SVGNS,'path');
+      p.setAttribute('d',SHAPE_PATHS[shp]||'');
+      p.setAttribute('fill',fill?(col+'2b'):'none');
+      p.setAttribute('stroke',col);
+      p.setAttribute('stroke-width',sw||3);
+      p.setAttribute('vector-effect','non-scaling-stroke');
+      p.setAttribute('stroke-linejoin','round');
+      if(dash) p.setAttribute('stroke-dasharray','7 6');
+      svg.appendChild(p);
+    }
+    return svg;
+  }
   function plotGraph(group,onNode){
-    if(!group||group.steps.length<2) return null;   /* nothing to draw */
-    var steps=group.steps,n=steps.length,idx={},i;
+    if(!group) return null;
+    /* the dependency graph is CODE lineage — linked markdown notes ride along
+       in the trace's card list but are not graph nodes (they aren't
+       computational deps, and mixing them in creates note<->definer cycles
+       that the transitive reduction can't lay out) */
+    var steps=group.steps.filter(function(s){return s.kind!=='note';});
+    if(steps.length<2) return null;                 /* nothing to draw */
+    var n=steps.length,idx={},i;
     for(i=0;i<n;i++) idx[steps[i].ns]=i;
     /* each step's ancestors that are also in this plot's set (from chain) */
     var anc=steps.map(function(s){
@@ -6033,6 +6456,10 @@ _DECK_JS = r"""
     });
     var groups=[];
     frames.forEach(function(f){
+      /* a framed markdown note carries no code trail of its own — its chain
+         now names its variables' cards (docs feature), but the presentation
+         must stay note-free */
+      if(f.it.kind==='note') return;
       var steps=[],seen2={};
       (f.it.chain||[]).forEach(function(anchor){
         var ns=nsKey(f.it.nb,anchor);
@@ -6258,27 +6685,69 @@ _DECK_JS = r"""
       var hs=document.createElement('span');
       hs.textContent=g.it.title;h.appendChild(hs);
       col.appendChild(h);
-      /* partition the steps under their notebook section (## heading)
-         and subsection (### heading) — code grouped like the notebook */
-      var lastSec=null,lastSub=null;
+      /* partition the steps under their notebook section (## heading) and
+         subsection (### heading). Each section is a collapsible + hideable
+         block, mirroring the docs — its steps live in a .vo-sec-body. */
+      var lastSec=null,lastSub=null,secBody=col,secNs=[],secHdr=null;
+      function wireSecEye(){
+        if(!secHdr) return;
+        var nss=secNs.slice();
+        secHdr.querySelector('.vo-sec-eye').addEventListener('click',
+          function(e){
+            e.stopPropagation();
+            var hid=hiddenSet({hidden:spec.list()});
+            var anyVis=nss.some(function(ns){return !hid[ns];});
+            nss.forEach(function(ns){
+              if(anyVis?!hid[ns]:hid[ns]) spec.toggle(ns);});
+            doRebuild();
+          });
+      }
       vis.forEach(function(st,k){
         var sec=st.sectitle||'',sub=st.subsection||'';
         if(sec!==lastSec){
+          wireSecEye();                       /* finish the previous section */
+          secNs=[];secHdr=null;
           if(sec){
             var sd=document.createElement('div');sd.className='vo-sec';
-            sd.textContent=sec;col.appendChild(sd);
+            var chev=document.createElement('span');
+            chev.className='vo-sec-chev';chev.innerHTML='&#9662;';
+            var lab=document.createElement('span');
+            lab.className='vo-sec-lab';lab.textContent=sec;
+            var eye=document.createElement('span');
+            eye.className='vo-sec-eye';eye.innerHTML='&#128065;';
+            eye.title='Hide or show this whole section';
+            sd.appendChild(chev);sd.appendChild(lab);sd.appendChild(eye);
+            col.appendChild(sd);
+            secBody=document.createElement('div');
+            secBody.className='vo-sec-body';col.appendChild(secBody);
+            secHdr=sd;
+            /* capture sd + secBody per-section (both are function-scoped vars
+               reused across steps) so each chevron folds its OWN body */
+            (function(hdr,bdy){
+              var fold=function(){
+                var c=hdr.classList.toggle('collapsed');
+                bdy.classList.toggle('vo-sec-fold',c);};
+              chev.addEventListener('click',function(e){
+                e.stopPropagation();fold();});
+              lab.addEventListener('click',fold);
+            })(sd,secBody);
+          } else {
+            secBody=col;   /* steps with no section go straight in the column */
           }
           lastSec=sec;lastSub=null;
         }
         if(sub!==lastSub){
           if(sub){
             var sbh=document.createElement('div');sbh.className='vo-subsec';
-            sbh.textContent=sub;col.appendChild(sbh);
+            sbh.textContent=sub;secBody.appendChild(sbh);
           }
           lastSub=sub;
         }
-        col.appendChild(traceStep(st,k,g,multi,!!hidden[st.ns],spec,doRebuild));
+        secNs.push(st.ns);
+        secBody.appendChild(
+          traceStep(st,k,g,multi,!!hidden[st.ns],spec,doRebuild));
       });
+      wireSecEye();                            /* finish the final section */
       cols.appendChild(col);
     });
     v.appendChild(cols);
@@ -6365,6 +6834,7 @@ _DECK_JS = r"""
     mono:'var(--mono)',system:'system-ui,sans-serif',
     hand:"'Segoe Print','Comic Sans MS',cursive"};
   var tool='select', selAnnot=null, picking=-1;
+  var pendingShape='rect';   /* which shape the "+ Shapes" tool draws */
   function titleProps(s,which){
     var key=which==='t'?'tprops':'sprops';
     if(!s[key]) s[key]=(which==='t')
@@ -6522,15 +6992,23 @@ _DECK_JS = r"""
           });
         }
       } else if(a.k==='rect'){
+        var shp=a.shape||'rect';
+        var col=a.color||'#ff6b57';
         var r=document.createElement('div');
-        r.className='an-item an-rect'+(selAnnot===i?' sel':'');
+        var svgShape=!!(SHAPE_PATHS[shp]||SHAPE_GLYPH[shp]);
+        r.className='an-item an-rect'+(svgShape?' an-svgshape':'')
+          +(selAnnot===i?' sel':'');
         r.style.left=a.x+'%';r.style.top=a.y+'%';
         r.style.width=(a.w||10)+'%';r.style.height=(a.h||10)+'%';
-        r.style.borderColor=a.color||'#ff6b57';
-        r.style.borderWidth=(a.sw||3)+'px';
-        r.style.borderStyle=a.dash?'dashed':'solid';
-        r.style.background=a.fill?((a.color||'#ff6b57')+'26'):'transparent';
-        if(a.shape==='ellipse') r.style.borderRadius='50%';
+        if(svgShape){
+          r.appendChild(drawShapeSvg(shp,col,a.sw||3,a.dash,a.fill));
+        } else {
+          r.style.borderColor=col;
+          r.style.borderWidth=(a.sw||3)+'px';
+          r.style.borderStyle=a.dash?'dashed':'solid';
+          r.style.background=a.fill?(col+'26'):'transparent';
+          if(shp==='ellipse') r.style.borderRadius='50%';
+        }
         applyCommon(r,a);
         r.setAttribute('data-idx',i);
         if(editing) r.appendChild(mkResize());
@@ -6698,7 +7176,7 @@ _DECK_JS = r"""
     show('#fmt-line',kind==='arrow'||kind==='rect');
     show('#fmt-dash',kind==='arrow'||kind==='rect',!!a.dash);
     show('#fmt-fill',kind==='rect',!!a.fill);
-    show('#fmt-shape',kind==='rect',a.shape==='ellipse');
+    show('#fmt-shape',kind==='rect',!!a.shape&&a.shape!=='rect');
     show('#fmt-op',true);
     var opBtn=$('#fmt-op');
     if(opBtn) opBtn.textContent='Op '
@@ -6779,7 +7257,8 @@ _DECK_JS = r"""
   }
   function startDraw(layer,s,kind,p0){
     var a=(kind==='rect')
-      ?{k:'rect',x:p0.x,y:p0.y,w:0,h:0,color:'#ff6b57',sw:3}
+      ?{k:'rect',x:p0.x,y:p0.y,w:0,h:0,color:'#ff6b57',sw:3,
+        shape:(pendingShape!=='rect'?pendingShape:undefined)}
       :{k:'arrow',x1:p0.x,y1:p0.y,x2:p0.x,y2:p0.y,
         color:'#ff6b57',sw:3};
     s.annots=s.annots||[];
@@ -6923,14 +7402,18 @@ _DECK_JS = r"""
     tool=t;
     $$('#edit-tools .et').forEach(function(b){
       b.setAttribute('aria-pressed',(b.dataset.tool===t).toString());});
+    var shb=$('#sh-btn');   /* the Shapes dropdown draws the 'rect' tool */
+    if(shb) shb.setAttribute('aria-pressed',(t==='rect').toString());
     var l=stage.querySelector('.annot-layer');
     if(l) l.className='annot-layer tool-'+t;
     var hint=$('#et-hint');
     if(hint) hint.textContent=
       t==='text'?'Click on the slide to place a text box'
       :t==='arrow'?'Drag on the slide to draw an arrow'
-      :t==='rect'?'Drag on the slide to draw a box'
-      :t==='cell'?'Click on the slide to place a notebook-cell frame'
+      :t==='rect'?('Drag on the slide to draw a '
+        +(pendingShape==='rect'?'rectangle':pendingShape))
+      :t==='cell'?'Click on the slide to drop a cell frame, then pick a card '
+        +'from your notebook to fill it'
       :'Click an item to select; drag to move; Del removes';
   }
   function deleteSel(){
@@ -7028,8 +7511,10 @@ _DECK_JS = r"""
   onFmt('#fmt-ital',function(a){a.i=a.i?0:1;});
   onFmt('#fmt-list',function(a){a.list=a.list?0:1;});
   onFmt('#fmt-shape',function(a){
-    a.shape=(a.shape==='ellipse')?undefined:'ellipse';
-    if(a.shape===undefined) delete a.shape;});
+    /* cycle the selected shape through the whole set */
+    var order=SHAPE_LIST.map(function(p){return p[0];});
+    var ni=(order.indexOf(a.shape||'rect')+1)%order.length;
+    if(order[ni]==='rect') delete a.shape; else a.shape=order[ni];});
   onFmt('#fmt-op',function(a){
     var steps=[1,0.75,0.5,0.25];
     var cur_=a.op==null?1:a.op;
@@ -7090,6 +7575,7 @@ _DECK_JS = r"""
   function go(n){
     cur=Math.max(0,Math.min(pres.slides.length-1,n));
     refresh();
+    if(window.SemApp&&window.SemApp.updateHash) window.SemApp.updateHash();
   }
 
   /* ---------- create mode: sidebar UI ---------- */
@@ -7368,7 +7854,7 @@ _DECK_JS = r"""
       loadPresentation(nm);
       cur=0;activePane=-1;
     }
-    openDeck('create');
+    openDeck('edit');   /* land straight in the slide editor */
   }
   function newPresentation(){
     var n2=1,name='presentation';
@@ -7380,7 +7866,7 @@ _DECK_JS = r"""
     pres={name:name,slides:[emptySlide()]};
     source='auto';
     cur=0;activePane=0;
-    openDeck('create');
+    openDeck('edit');   /* land straight in the slide editor */
   }
 
   function renderPresRow(){
@@ -7833,10 +8319,15 @@ _DECK_JS = r"""
     else if(mode==='edit'){renderCreate();renderSlide();}
     else renderSlide();
   }
+  function routeSync(){
+    if(window.SemApp&&window.SemApp.updateHash) window.SemApp.updateHash();
+  }
   function openDeck(m){
     deckEl.hidden=false;
+    var sr=$('#slide-return'); if(sr) sr.hidden=true;
     status();
     setUIMode(m||'view');
+    routeSync();
   }
   function closeDeck(){
     try{
@@ -7845,17 +8336,43 @@ _DECK_JS = r"""
     }catch(err){}
     closeVFull();
     deckEl.hidden=true;
+    var sr=$('#slide-return'); if(sr) sr.hidden=true;
     document.body.classList.remove('deck-open');
     document.body.classList.remove('creating-docs');
     document.body.classList.remove('slide-editing');
     deckEl.classList.remove('creating');
     deckEl.classList.remove('editing');
     renderPresTabs();
+    routeSync();
   }
-  $('#deck-docs').addEventListener('click',closeDeck);
-  $('#dc-close').addEventListener('click',closeDeck);
+  /* ---- URL routing hooks used by the SemApp router (docs side) ---- */
+  window.SemApp.deckState=function(){
+    return deckEl.hidden?null:{name:pres.name,slide:cur};
+  };
+  window.SemApp.deckClose=function(){closeDeck();};
+  window.SemApp.deckGo=function(slide){   /* move slide, keep the current mode */
+    if(deckEl.hidden) return;
+    go(Math.max(0,Math.min(((pres.slides||[]).length||1)-1,slide||0)));
+  };
+  window.SemApp.deckOpen=function(name,slide){
+    if(!name) return false;
+    if(pres.name!==name){
+      if(!(savedByName(name)||loadDraft(name))) return false;
+      lsSet(PFX+'last',name);
+      loadPresentation(name);
+      activePane=-1;
+    }
+    cur=0;
+    if(typeof slide==='number'&&slide>0)
+      cur=Math.max(0,Math.min(((pres.slides||[]).length||1)-1,slide));
+    openDeck('edit');
+    return true;
+  };
+  /* wrap so the click Event isn't forwarded (closeDeck takes no args) */
+  $('#deck-docs').addEventListener('click',function(){closeDeck();});
+  $('#dc-close').addEventListener('click',function(){closeDeck();});
   var prDocs=document.getElementById('pr-docs');
-  if(prDocs) prDocs.addEventListener('click',closeDeck);
+  if(prDocs) prDocs.addEventListener('click',function(){closeDeck();});
   var prNew=document.getElementById('pr-new');
   if(prNew) prNew.addEventListener('click',newPresentation);
   $('#pres-current').addEventListener('click',function(){
@@ -7883,6 +8400,75 @@ _DECK_JS = r"""
   $$('#edit-tools .et').forEach(function(b){
     b.addEventListener('click',function(){setTool(b.dataset.tool);});
   });
+  /* ---- "+ Shapes" dropdown: choose a shape, then draw it ---- */
+  function shapeIcon(shp){
+    var svg=document.createElementNS(SVGNS,'svg');
+    svg.setAttribute('class','sh-ico');svg.setAttribute('viewBox','0 0 100 100');
+    if(shp==='rect'){
+      var rc=document.createElementNS(SVGNS,'rect');
+      rc.setAttribute('x','12');rc.setAttribute('y','22');
+      rc.setAttribute('width','76');rc.setAttribute('height','56');
+      rc.setAttribute('rx','7');rc.setAttribute('fill','#c9d6e2');
+      svg.appendChild(rc);
+    } else if(shp==='ellipse'){
+      var el=document.createElementNS(SVGNS,'ellipse');
+      el.setAttribute('cx','50');el.setAttribute('cy','50');
+      el.setAttribute('rx','42');el.setAttribute('ry','33');
+      el.setAttribute('fill','#c9d6e2');svg.appendChild(el);
+    } else if(SHAPE_GLYPH[shp]){
+      var tx=document.createElementNS(SVGNS,'text');
+      tx.setAttribute('x','50');tx.setAttribute('y','56');
+      tx.setAttribute('text-anchor','middle');
+      tx.setAttribute('dominant-baseline','central');
+      tx.setAttribute('font-size','98');tx.setAttribute('font-weight','800');
+      tx.setAttribute('fill','#c9d6e2');tx.textContent=SHAPE_GLYPH[shp];
+      svg.appendChild(tx);
+    } else {
+      var p=document.createElementNS(SVGNS,'path');
+      p.setAttribute('d',SHAPE_PATHS[shp]||'');
+      p.setAttribute('fill','#c9d6e2');svg.appendChild(p);
+    }
+    return svg;
+  }
+  (function(){
+    var shBtn=$('#sh-btn'),shMenu=$('#sh-menu'),shDrop=$('#sh-drop');
+    if(!shBtn||!shMenu) return;
+    SHAPE_LIST.forEach(function(pair){
+      var opt=document.createElement('button');
+      opt.className='sh-opt';opt.type='button';opt.title=pair[1];
+      opt.dataset.shape=pair[0];
+      opt.appendChild(shapeIcon(pair[0]));
+      var t=document.createElement('span');t.className='sh-opt-t';
+      t.textContent=pair[1];opt.appendChild(t);
+      opt.addEventListener('click',function(e){
+        e.stopPropagation();
+        pendingShape=pair[0];
+        shMenu.hidden=true;shBtn.setAttribute('aria-expanded','false');
+        setTool('rect');
+      });
+      shMenu.appendChild(opt);
+    });
+    shBtn.addEventListener('click',function(e){
+      e.stopPropagation();
+      var willOpen=shMenu.hidden;
+      shMenu.hidden=!willOpen;
+      shBtn.setAttribute('aria-expanded',willOpen.toString());
+    });
+    document.addEventListener('click',function(e){
+      if(!shMenu.hidden&&shDrop&&!shDrop.contains(e.target)){
+        shMenu.hidden=true;shBtn.setAttribute('aria-expanded','false');}
+    });
+  })();
+  /* ---- slide view <-> notebook view ---- */
+  var nbViewBtn=$('#et-notebook');
+  if(nbViewBtn) nbViewBtn.addEventListener('click',function(){
+    closeDeck();
+    var sr=$('#slide-return');
+    if(sr){sr.hidden=false;
+      sr.textContent='▭ Back to '+(pres.name||'slide');}
+  });
+  var srBtn=$('#slide-return');
+  if(srBtn) srBtn.addEventListener('click',function(){openDeck('edit');});
   var downBtn=$('#deck-down');
   if(downBtn) downBtn.addEventListener('click',scrollToTrace);
   var upBtn=$('#deck-up');
@@ -8415,6 +9001,9 @@ _DECK_JS = r"""
 
   status();
   renderPresTabs();
+  /* both IIFEs + their route hooks are now wired — restore the URL's view */
+  if(window.SemApp&&window.SemApp.applyInitialRoute)
+    window.SemApp.applyInitialRoute();
 })();
 """
 
@@ -8459,9 +9048,6 @@ _TEMPLATE = """<!doctype html>
 <div class="scrim" id="scrim"></div>
 <header class="apptop" id="apptop">
   <div class="appbar">
-    <button class="menubtn" id="menubtn" aria-label="Toggle sections"
-      title="Show or hide the section sidebar (table of contents)">
-      <span></span></button>
     <button class="toggle tv" id="tv-plots"
       title="Plots / figures — the headline of each cell. Click to cycle:
  Visible -> Collapsed -> Hidden"></button>
@@ -8497,9 +9083,11 @@ _TEMPLATE = """<!doctype html>
       title="How to use, and everything this tool can do">Help</button>
   </div>
   <div class="tabsrow">
+    <button class="menubtn" id="menubtn" aria-label="Toggle sections"
+      title="Show or hide the section sidebar (table of contents)">
+      <span></span></button>
     <button class="tabrow-open" id="tab-open" hidden
       title="Open a notebook (.ipynb)">&#43; Open</button>
-    <span class="tabs-label">docs</span>
     <div class="tabstrip" id="tabstrip" role="tablist"
       aria-label="Open notebooks"></div>
   </div>
@@ -9234,8 +9822,18 @@ def _self_test() -> None:
     # notebooks-in-presentation chips + advanced code-type filter
     assert 'id="dc-nbs"' in out and "renderPresNbs" in out
     assert 'id="ck-filter-btn"' in out and 'id="ck-filter-menu"' in out
-    # printed-output cells read "print", markdown notes stay "note"
-    assert _BADGE["text"] == "print" and _BADGE["note"] == "note"
+    # printed output (incl. a bare expression) reads "print"; markdown notes
+    # read "markdown" (not "note"); "metric" is gone — a printed value IS print
+    assert _BADGE["text"] == "print" and _BADGE["note"] == "markdown"
+    assert _BADGE["metric"] == "print"
+    assert _infer_kind([RenderedOutput("text", "5", ot="print")]) == "text"
+    # the key groups its dots with dividers (markdown | plots | code | output)
+    _knav = render_nav(parse_notebook({"cells": [
+        {"cell_type": "markdown", "source": "note text"},
+        {"cell_type": "code", "source": "import os", "outputs": []},
+        {"cell_type": "code", "source": "print(1)", "outputs": [
+            {"output_type": "stream", "name": "stdout", "text": "1\n"}]}]}))
+    assert "navkey-div" in _knav and ">markdown<" in _knav and ">note<" not in _knav
     # advanced OUTPUT-type filter + finer repr types (numeric/list/dict/…)
     assert 'id="ot-filter-btn"' in out and 'id="ot-filter-menu"' in out
     assert "function presentOtTypes" in out and ".ot-off{display:none" in out
@@ -9245,10 +9843,35 @@ def _self_test() -> None:
     assert _repr_kind("'hi'") == "string" and _repr_kind("(1, 2)") == "tuple"
     assert _repr_kind("True") == "bool" and _repr_kind("None") == "none"
     assert _repr_kind("np.float64(1.5)") == "array"
+    # empty dict is a dict, not a set; string contents don't fool set/dict
+    assert _repr_kind("{}") == "dict"
+    assert _repr_kind("{'12:00', '13:00'}") == "set"
+    assert _repr_kind("{'a}b': 1}") == "dict"
+    # every numeric-like repr lands under "numeric" (complex, inf, nan, sci)
+    assert _repr_kind("(1+2j)") == "numeric" and _repr_kind("2j") == "numeric"
+    assert _repr_kind("inf") == "numeric" and _repr_kind("-nan") == "numeric"
+    assert _repr_kind("-1.5e-9") == "numeric"
+    # granular value types: function / class / object / module + pandas
+    assert _repr_kind("<function foo at 0x1>") == "function"
+    assert _repr_kind("<class 'int'>") == "class"
+    assert _repr_kind("<module 'os'>") == "module"
+    assert _repr_kind("<Foo object at 0x1>") == "object"
+    assert _repr_kind("0    1\n1    2\ndtype: int64") == "series"
+    assert _repr_kind("   a  b\n0  1  2\n\n[1 rows x 2 columns]") == "dataframe"
+    # a pandas DataFrame HTML table is tagged 'dataframe'
+    _dfo = render_outputs([{"output_type": "execute_result", "data": {
+        "text/html": '<table class="dataframe"><tr><td>1</td></tr></table>'}}])
+    assert _dfo and _dfo[0].ot == "dataframe" and "ot-dataframe" in _dfo[0].payload
+    # the Output-types menu must actually surface the finer slugs (not filter
+    # them out against a stale allow-list)
+    assert "var OT_TYPES=['print','numeric'" in out
+    assert "if(OT_TYPES.indexOf(t)<0) out.push(t)" in out
+    # opening a collapsed output must not re-show type-filtered children
+    assert ".cb-out.part-fold.part-open>*:not(.ot-off){display:revert" in out
     _rout = render_outputs([
         {"output_type": "execute_result", "data": {"text/plain": "[1, 2, 3]"}}])
     assert _rout and _rout[0].ot == "list" and "ot-list" in _rout[0].payload
-    assert ".ckf-dot.ot-sw-numeric" in out and ".ckf-dot.ot-sw-dict" in out
+    assert ".ckf-dot.ot-sw-numeric" in out and ".ckf-dot.ot-sw-dataframe" in out
     # the sidebar key sits at the TOP (before the first section row)
     _nav = render_nav(doc)
     assert "navkey" in _nav and _nav.index("navkey") < _nav.index("navsec-row")
@@ -9423,6 +10046,26 @@ def _self_test() -> None:
     assert 'data-lay="rows"' in out and 'data-lay="title"' in out
     assert 'id="edit-tools"' in out and 'id="dc-edit"' in out
     assert 'id="et-fmt"' in out and 'data-tool="cell"' in out
+    # URL routing: a unique, restorable hash per view (#/doc/<stem>, #/pres/…)
+    assert "function applyHash" in out and "APP.updateHash=updateHash" in out
+    assert "'#/doc/'" in out and "'#/pres/'" in out
+    assert "window.SemApp.deckOpen" in out and "window.SemApp.deckState" in out
+    assert "window.SemApp.deckGo" in out   # move slide without reopening the mode
+    assert "APP.applyInitialRoute" in out and "'hashchange'" in out
+    # in-app nav uses replaceState (no back-stack flood); a late-mounting tab
+    # (web restore) satisfies a still-pending initial route
+    assert "history.replaceState" in out and "pendingRoute" in out
+    assert "document.addEventListener('sem:shell'" in out
+    # builder workflow: a presentation opens in the slide EDITOR by default
+    assert out.count("openDeck('edit')") >= 2
+    # the prominent "+ Notebook cell" button, the "+ Shapes" dropdown, and the
+    # slide<->notebook view toggle
+    assert 'et-bigcell" data-tool="cell"' in out and "Notebook cell" in out
+    assert 'id="sh-btn"' in out and 'id="sh-menu"' in out and "var SHAPE_LIST" in out
+    assert 'id="et-notebook"' in out and 'id="slide-return"' in out
+    # shapes render as SVG paths (star/cloud/…) or glyphs (!/?); box+ellipse CSS
+    assert "var SHAPE_PATHS" in out and "function drawShapeSvg" in out
+    assert ".an-rect.an-svgshape" in out and "an-shape-svg" in out
     assert 'id="fmt-op"' in out and 'id="fmt-rotl"' in out
     assert 'id="theme-btn"' in out
     assert 'id="fmt-font"' in out and "body.light .apptop" in out
@@ -9430,6 +10073,23 @@ def _self_test() -> None:
     assert 'id="fmt-list"' in out and 'id="fmt-shape"' in out
     assert 'id="fmt-dup"' in out and 'id="fmt-front"' in out
     assert 'id="pickbar"' in out and 'id="fmt-replace"' in out
+    # top-left declutter: no "docs" label; the hamburger moved onto the tab
+    # line (between the tabsrow and the tabstrip)
+    assert 'class="tabs-label"' not in out
+    assert (out.index('class="tabsrow"') < out.index('id="menubtn"')
+            < out.index('id="tabstrip"'))
+    assert ".tabsrow .menubtn" in out
+    # slide-editor declutter: an unselected edit frame is transparent + borderless
+    # and its chrome (border/title/Replace/parts) returns only when selected
+    assert (".deck.editing .an-cell{cursor:move;background:none;"
+            "border-color:transparent" in out)
+    assert ".deck.editing .an-cell.sel .an-cellbtn{display:block" in out
+    assert ".deck.editing .an-cell.sel .cellparts" in out
+    # the empty placeholder keeps its dashed box; the header is an overlay
+    # (out of flow) so selecting a frame doesn't reflow the figure
+    assert ".deck.editing .an-cell.empty{background:#0e192699" in out
+    assert ".deck.editing .an-cell.sel .an-cellhead" in out
+    assert ".pane.filled .an-cellhead{position:absolute" in out
     pres_f = _as_presentations([{"name": "a", "folder": "paper 1",
                                  "slides": []}])
     assert pres_f[0]["folder"] == "paper 1"
@@ -9459,6 +10119,36 @@ def _self_test() -> None:
     assert "function wireCardBehaviors" in out and "APP.wireCardBehaviors" in out
     # a trace tab renders as a SUB-tab nested under its source notebook tab
     assert "tab-sub" in out and "function makeTab" in out
+    # a markdown note that NAMES a variable is linked into that variable's
+    # plot trace: it rides along as a trace CARD (up.kind==='note') but is
+    # excluded from the dependency graph (s.kind!=='note', avoids note<->definer
+    # cycles) and never leaks a code trail into the presentation (note frames)
+    assert "up.kind==='note'" in out
+    assert "s.kind!=='note'" in out
+    assert "f.it.kind==='note') return" in out
+    _lnb = parse_notebook({"cells": [
+        {"cell_type": "code", "source": "ridge_index = 1", "outputs": []},
+        {"cell_type": "markdown", "source": "The `ridge_index` and z500 matter."},
+        {"cell_type": "code", "source": "z500 = 2", "outputs": []},
+        {"cell_type": "code", "source": "fig = ridge_index + z500", "outputs": [
+            {"output_type": "display_data",
+             "data": {"image/png": "iVBORw0KGgo="}}]}]})
+    _lnote = [it for s in _lnb.sections for it in s.items if it.is_note][0]
+    _lfig = [it for s in _lnb.sections for it in s.items
+             if it.kind in ("figure", "diagnostic")][0]
+    assert (_lnote.anchor or _lnote.item_id) in _lfig.chain   # note rides along
+    assert _lnote.chain                                       # note -> its vars
+    # a plain-word variable named in prose (no backticks) must NOT over-link
+    _pnb = parse_notebook({"cells": [
+        {"cell_type": "code", "source": "warm = 1", "outputs": []},
+        {"cell_type": "markdown", "source": "We study warm events in summer."},
+        {"cell_type": "code", "source": "fig = warm + 1", "outputs": [
+            {"output_type": "display_data",
+             "data": {"image/png": "iVBORw0KGgo="}}]}]})
+    _pnote = [it for s in _pnb.sections for it in s.items if it.is_note][0]
+    _pfig = [it for s in _pnb.sections for it in s.items
+             if it.kind in ("figure", "diagnostic")][0]
+    assert (_pnote.anchor or _pnote.item_id) not in _pfig.chain
     # the retired focus-mode machinery is gone
     assert "focusStem" not in out and 'id="focusbar"' not in out
     # toolbar: content filters, a grouping divider, Open moved to the tab line
@@ -9477,6 +10167,12 @@ def _self_test() -> None:
     # the presentation code-trail has its OWN Code-types / Output-types filters
     assert "function traceFilterDropdown" in out and ".vo-step.vo-filtered" in out
     assert "var traceCkHidden" in out and "function applyTraceFilter" in out
+    # presentation trail sections collapse + hide (chevron + eye), like the docs
+    assert ".vo-sec-chev" in out and ".vo-sec-eye" in out
+    assert ".vo-sec-body.vo-sec-fold{display:none" in out
+    # the trail toolbar clears the ↑ arrow, and its buttons match the docs
+    assert "padding:64px 0 60px" in out
+    assert ".vo-xall,.vo-fbtn{font-family:var(--mono);font-size:11px" in out
     # guided tour (skippable, shown once) + entry points
     assert 'id="tour"' in out and "var TOUR_STEPS" in out
     assert 'id="welcome-tour"' in out and 'id="help-tour"' in out
