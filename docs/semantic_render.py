@@ -2256,10 +2256,6 @@ body.presrail-min{--presrail-w:46px;}
 .appbar .toggle,.appbar .appbar-link,.appbar .tab-openbtn{
   flex:none;white-space:nowrap;height:30px;box-sizing:border-box;
   padding-top:0;padding-bottom:0;line-height:1;}
-.apptop-brand{font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;
-  text-transform:uppercase;color:var(--cyan);display:flex;align-items:center;
-  align-self:stretch;padding:0 14px;border-right:1px solid #ffffff10;
-  flex:none;}
 .appbar-spring{flex:1;}
 /* dark variants of the show/hide toggles */
 .appbar .toggle{border-color:#ffffff22;background:#ffffff0a;color:#cdd9e3;}
@@ -2313,6 +2309,15 @@ body.presrail-min{--presrail-w:46px;}
 .presrail{position:fixed;left:0;top:0;bottom:0;width:var(--presrail-w);
   z-index:95;background:#0a141d;border-right:1px solid #ffffff1f;
   display:flex;flex-direction:column;padding:8px 6px;gap:2px;}
+/* the PlotLine wordmark now lives at the top of the left rail */
+.presrail-brand{font-family:var(--mono);font-size:13px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--cyan);font-weight:600;
+  padding:9px 10px 13px;display:flex;align-items:center;flex:none;}
+.prb-min{display:none;}
+body.presrail-min .prb-full{display:none;}
+body.presrail-min .presrail-brand{justify-content:center;padding:9px 0 13px;}
+body.presrail-min .prb-min{display:inline;font-size:16px;letter-spacing:0;}
+body.light .presrail-brand{color:var(--cyan-deep);}
 .pr-item{display:flex;align-items:center;gap:9px;width:100%;
   background:none;border:none;border-radius:7px;padding:9px 10px;
   font-family:var(--sans);font-size:12.5px;color:#8ba0b2;cursor:pointer;
@@ -2422,7 +2427,8 @@ body.creating-docs .apptop{
   background:var(--paper-2);z-index:5;overflow:auto;}
 .welcome[hidden]{display:none;}
 .welcome-box{text-align:center;max-width:460px;padding:40px 30px;}
-.welcome-box .brand{justify-content:center;}
+.welcome-box .brand{justify-content:center;font-size:19px;letter-spacing:.2em;
+  margin-bottom:4px;}
 .welcome-box h1{font-size:26px;letter-spacing:-.02em;margin:12px 0 8px;
   color:var(--ink);}
 .welcome-hint{color:var(--ink-3);font-size:13.5px;line-height:1.6;
@@ -2620,8 +2626,6 @@ body.light .ckf-h{color:var(--ink-3);}
    canvas stays dark (decks look identical on every machine) -------- */
 body.light .apptop{background:#f4f7fa;border-color:var(--line);}
 body.light .appbar{border-bottom-color:var(--line);}
-body.light .apptop-brand{color:var(--cyan-deep);
-  border-right-color:var(--line);}
 body.light .appbar .toggle{border-color:var(--line);background:#fff;
   color:var(--ink-2);}
 body.light .appbar .toggle:hover{border-color:var(--cyan);
@@ -4488,10 +4492,10 @@ body.deck-open{overflow:hidden;}
   letter-spacing:.18em;text-transform:uppercase;color:#7e93a4;
   text-align:center;display:flex;gap:10px;align-items:center;
   justify-content:center;flex-wrap:wrap;}
-.vo-xall{font-family:var(--mono);font-size:10px;letter-spacing:.06em;
+.vo-xall,.vo-fbtn{font-family:var(--mono);font-size:10px;letter-spacing:.06em;
   text-transform:none;background:#ffffff0a;border:1px solid #ffffff22;
   color:#cdd9e3;border-radius:5px;padding:3px 9px;cursor:pointer;}
-.vo-xall:hover{border-color:var(--cyan);color:#fff;}
+.vo-xall:hover,.vo-fbtn:hover{border-color:var(--cyan);color:#fff;}
 /* the trail's Code-types / Output-types filter dropdowns */
 .vo-fdrop{position:relative;display:inline-block;}
 .vo-fmenu{position:absolute;top:calc(100% + 5px);left:0;z-index:40;
@@ -4561,7 +4565,7 @@ body.deck-open{overflow:hidden;}
 .vo-step.hidden .vo-step-t::after{content:" · hidden";
   color:#8ba0b2;font-family:var(--mono);font-size:10px;
   letter-spacing:.04em;}
-.vo-xall.on{border-color:var(--cyan);color:#fff;
+.vo-xall.on,.vo-fbtn.on{border-color:var(--cyan);color:#fff;
   background:#39a9c022;}
 .vo-step-b{display:none;padding:2px 10px 10px;}
 .vo-step.open .vo-step-b{display:block;}
@@ -5876,7 +5880,7 @@ _DECK_JS = r"""
   function traceFilterDropdown(kind,present,state,v){
     var wrap=document.createElement('span');wrap.className='vo-fdrop';
     var btn=document.createElement('button');
-    btn.className='vo-xall'+(Object.keys(state).length?' on':'');
+    btn.className='vo-fbtn'+(Object.keys(state).length?' on':'');
     btn.textContent=(kind==='code'?'Code types':'Output types')+' ▾';
     var menu=document.createElement('div');menu.className='vo-fmenu';
     menu.hidden=true;
@@ -8163,7 +8167,6 @@ _TEMPLATE = """<!doctype html>
 <div class="scrim" id="scrim"></div>
 <header class="apptop" id="apptop">
   <div class="appbar">
-    <span class="apptop-brand">PlotLine</span>
     <button class="menubtn" id="menubtn" aria-label="Toggle sections"
       title="Show or hide the section sidebar (table of contents)">
       <span></span></button>
@@ -8208,6 +8211,8 @@ _TEMPLATE = """<!doctype html>
   </div>
 </header>
 <nav class="presrail" id="presrail" aria-label="Presentations">
+  <div class="presrail-brand"><span class="prb-full">PlotLine</span>
+    <span class="prb-min">P</span></div>
   <button class="pr-item pr-docs current" id="pr-docs"
     title="Document view — closes the presentation builder">
     <span class="pr-ico">&#9636;</span>
@@ -8251,8 +8256,6 @@ _TEMPLATE = """<!doctype html>
       <span class="wl-sep">&middot;</span>
       <a href="#" id="welcome-help">How to use</a>
       <span class="wl-sep">&middot;</span>
-      <a href="{repo}" target="_blank" rel="noopener">GitHub</a>
-      <span class="wl-sep">&middot;</span>
       <a href="{kofi}" target="_blank"
         rel="noopener">Support &#9829;</a>
     </div>
@@ -8266,8 +8269,6 @@ _TEMPLATE = """<!doctype html>
       <span class="deck-spring"></span>
       <button class="dbtn" id="help-tour" title="Take the guided tour">&#9654;
         Take a tour</button>
-      <a class="help-gh" href="{repo}" target="_blank"
-        rel="noopener">GitHub &#8599;</a>
       <button class="dbtn" id="help-close" title="Close">&#10005;</button>
     </div>
     <div class="help-body">
@@ -9233,7 +9234,9 @@ def _self_test() -> None:
     assert 'id="helpdlg"' in web_page and 'id="help-btn"' in web_page
     assert "ko-fi.com/plotline" in web_page
     assert 'id="support-btn"' in web_page
-    assert 'id="welcome-demo"' in web_page and _REPO_URL in web_page
+    assert 'id="welcome-demo"' in web_page
+    # the GitHub repo link is intentionally NOT surfaced in the UI (privacy)
+    assert _REPO_URL not in web_page
     assert "#| title:" in web_page          # directives documented in help
     import tempfile
     with tempfile.TemporaryDirectory() as td:
