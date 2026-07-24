@@ -114,6 +114,34 @@ _KOFI_URL = "https://ko-fi.com/plotline"
 
 _DIRECTIVE_RE = re.compile(r"^\s*#\|\s*([A-Za-z_]+)\s*:\s*(.*?)\s*$")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*$")
+# a raw HTML heading that OPENS a markdown cell, e.g.
+# `<h1 style="color:cyan">Results</h1>` — attributes and inner markup are
+# allowed and it may span several lines. Notebooks that style their headers
+# with inline HTML are common, and these must register as headings too.
+_HTML_HEADING_RE = re.compile(
+    r"^<h([1-6])\b[^>]*>(.*?)</h\1\s*>", re.IGNORECASE | re.DOTALL)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _lead_heading(source: str) -> tuple[int, str, str] | None:
+    """Detect a heading at the very start of a markdown cell — a Markdown ATX
+    heading (`## Title`) OR a raw HTML heading (`<h2 ...>Title</h2>`). Returns
+    (level, plain_title, rest_after_heading), or None when the cell does not
+    open with a heading."""
+    stripped = source.strip()
+    if not stripped:
+        return None
+    first = stripped.splitlines()[0]
+    m = _HEADING_RE.match(first)
+    if m:
+        rest = "\n".join(stripped.splitlines()[1:]).strip()
+        return len(m.group(1)), m.group(2).strip(), rest
+    m = _HTML_HEADING_RE.match(stripped)
+    if m:
+        text = html.unescape(_TAG_RE.sub("", m.group(2))).strip()
+        if text:
+            return int(m.group(1)), text, stripped[m.end():].strip()
+    return None
 
 # display types we understand; anything else falls back to "code"
 _DISPLAY_TYPES = {
@@ -971,9 +999,9 @@ def parse_notebook(nb: dict, title: str | None = None) -> Document:
             handled_heading = False
             md_anchor = f"cell:{cell.get('id')}" if cell.get("id") else ""
             stripped = source.strip()
-            m = _HEADING_RE.match(stripped.splitlines()[0]) if stripped else None
-            if m:
-                level, text = len(m.group(1)), m.group(2).strip()
+            lead = _lead_heading(source)
+            if lead:
+                level, text, rest = lead
                 if level <= 2:
                     # Every heading opens its own section, in document order.
                     # Markdown headings are POSITIONAL: two headings that share
@@ -1000,7 +1028,6 @@ def parse_notebook(nb: dict, title: str | None = None) -> Document:
                     cur_subsection = text
                     handled_heading = True
                 # prose after the heading becomes a note
-                rest = "\n".join(stripped.splitlines()[1:]).strip()
                 if rest:
                     sec = ensure_section()
                     nid = _slug("note", used_slugs)
@@ -2459,7 +2486,7 @@ layout from the diagrams (full, halves, rows, quarters, a
 <li>The editor is PowerPoint-style: <b>+ Text</b>, <b>+ Arrow</b>, and
 <b>+ Shapes</b> (rectangle, ellipse, star, arrow, cloud, and more).
 Select anything for colours, text size, line thickness, dash and fill;
-use <b>Notebook view</b> to scroll your cells and jump back.</li>
+use <b>Swap to notebooks</b> to scroll your cells and swap back.</li>
 <li><b>&#9654; Present</b> plays full screen. Arrow keys &larr;/&rarr;
 move through the story; on slides with code, &darr; descends the
 <b>code trail</b> &mdash; every cell that made the figure, one per
@@ -4832,8 +4859,8 @@ _DECK_HTML = """
             spellcheck="false" autocomplete="off">
         </div>
         <button class="dbtn" id="dc-edit"
-          title="Open this slide full-screen; add text, arrows and boxes">
-          &#9998; Edit slide</button>
+          title="Swap to the slide editor — add text, arrows and boxes">
+          &#9998; Swap to edit view</button>
       </div>
       <div class="dc-block dc-film">
         <div class="film-list" id="film-list"></div>
@@ -4844,6 +4871,13 @@ _DECK_HTML = """
       <div class="edit-tools" id="edit-tools" hidden>
         <button class="dbtn primary" id="dc-play"
           title="Play the presentation fullscreen">&#9654; Present</button>
+        <div class="dc-menuwrap">
+          <button class="dbtn" id="dc-nbs-btn" aria-haspopup="true"
+            aria-expanded="false"
+            title="Notebooks that went into this presentation">&#128218;
+            Open notebooks</button>
+          <div class="dc-menu dc-nbs-menu" id="dc-nbs-menu" hidden></div>
+        </div>
         <button class="dbtn et" data-tool="cell"
           aria-pressed="false"
           title="Drop a notebook card onto the slide — you pick which one from
@@ -4868,15 +4902,8 @@ _DECK_HTML = """
         <span class="deck-spring"></span>
         <button class="dbtn viewtoggle" id="et-notebook"
           title="Bring up your notebooks in the editor to scroll or pick
- cells — the slide is right here when you switch back">&#9636;
-          Notebook view</button>
-        <div class="dc-menuwrap">
-          <button class="dbtn" id="dc-nbs-btn" aria-haspopup="true"
-            aria-expanded="false"
-            title="Notebooks that went into this presentation">&#128218;
-            Open notebooks</button>
-          <div class="dc-menu dc-nbs-menu" id="dc-nbs-menu" hidden></div>
-        </div>
+ cells — swap back to the slide any time">&#9636;
+          Swap to notebooks</button>
         <span class="et-fmt" id="et-fmt" hidden>
           <span class="fmt-lab" id="fmt-txlab" hidden>T</span>
           <button class="sw" data-c="#ff6b57"
@@ -5501,9 +5528,6 @@ body.slide-editing .apptop{display:none;}
   text-transform:uppercase;color:var(--amber);}
 .et-hint{font-size:11px;color:#7e93a4;}
 .et-div{width:1px;height:22px;background:#ffffff26;flex:none;margin:0 3px;}
-/* the Notebooks popover sits on the right of the tool bar, so it drops down
-   right-aligned to stay on-screen */
-#edit-tools .dc-nbs-menu{left:auto;right:0;}
 /* the "+ Shapes" dropdown */
 .sh-drop{position:relative;display:inline-block;}
 #sh-btn[aria-pressed="true"]{background:var(--cyan-deep);
@@ -6782,7 +6806,7 @@ _DECK_JS = r"""
       bs.className='slide slide-blank';
       if(mode==='view'&&!(s.annots||[]).length){
         bs.innerHTML='<p class="slide-emptyhint">Empty slide — pick a '
-          +'layout or use ✎ Edit slide.</p>';
+          +'layout or use ✎ Swap to edit view.</p>';
       }
       stage.appendChild(bs);
     }
@@ -7149,14 +7173,17 @@ _DECK_JS = r"""
       if(on&&pressed!==undefined)
         el.setAttribute('aria-pressed',pressed.toString());
     }
-    /* a markdown cell frame is text too — it gets the same colour controls */
-    var cellText=false;
+    /* cellText = a resizable text-ish cell (A-/A+ content zoom applies to any
+       non-figure cell). noteCell = a MARKDOWN note specifically — only its
+       rendered .note carries a colour, so ONLY it gets the colour swatches. */
+    var cellText=false,noteCell=false;
     if(kind==='cell'&&a.ref){
       var ci=resolveRef(a.ref);
       cellText=!!ci&&ci.kind!=='figure'&&ci.kind!=='diagnostic';
+      noteCell=!!ci&&ci.kind==='note';
     }
     $$('.sw:not(.swbg)',bar).forEach(function(sw){
-      sw.hidden=(kind==='cell'&&!cellText);
+      sw.hidden=(kind==='cell'&&!noteCell);
       var cur_=(kind==='cell')?(a.txcol||''):(a.color||defaultColor(kind));
       sw.setAttribute('aria-pressed',(cur_===sw.dataset.c).toString());
     });
@@ -7186,8 +7213,8 @@ _DECK_JS = r"""
     show('#fmt-front',isNum&&kind!=='arrow');
     show('#fmt-back',isNum&&kind!=='arrow');
     var plainText=isText&&typeof selAnnot==='number';
-    var showBg=plainText||cellText;
-    show('#fmt-txlab',(isText&&kind!=='cell')||cellText);
+    var showBg=plainText||noteCell;
+    show('#fmt-txlab',(isText&&kind!=='cell')||noteCell);
     show('#fmt-bglab',showBg);
     $$('.swbg',bar).forEach(function(sw){
       sw.hidden=!showBg;
@@ -7905,7 +7932,7 @@ _DECK_JS = r"""
     if(eb){
       eb.disabled=!s||mode==='edit';
       eb.innerHTML=(mode==='edit')
-        ?'&#10003; Editing this slide':'&#9998; Edit slide';
+        ?'&#10003; Editing this slide':'&#9998; Swap to edit view';
     }
   }
   /* the current slide's interactive frame editor — embedded inline as
@@ -8459,8 +8486,9 @@ _DECK_JS = r"""
     });
   })();
   /* ---- slide view <-> notebook view ----
-     "Notebook view" brings the notebooks up inside the editor (create mode);
-     it never leaves the presentation. "Edit slide" takes you back. */
+     "Swap to notebooks" brings the notebooks up inside the editor (create
+     mode); it never leaves the presentation. "Swap to edit view" takes you
+     back to the slide. */
   var nbViewBtn=$('#et-notebook');
   if(nbViewBtn) nbViewBtn.addEventListener('click',function(){
     setUIMode('create');
@@ -9776,6 +9804,7 @@ def _self_test() -> None:
             {"cell_type": "markdown", "id": "md-html",
              "source": "<h1 style='color:cyan'> Universal </h1>\n\n"
                        "plain paragraph\n\n"
+                       "<div style='color:cyan'>styled block</div>\n\n"
                        "<script>alert(1)</script>\n\n"
                        "<a href='javascript:alert(2)'>x</a>"},
         ]
@@ -9925,6 +9954,25 @@ def _self_test() -> None:
     assert any(s.title == "PR" and s.level == 1 for s in hdoc.sections)
     assert any(s.title == "Details" and s.level == 2 for s in hdoc.sections)
     assert hdoc.title == "PR"          # first h1 also names the document
+    # raw HTML headings (with attributes / inline styles) register exactly like
+    # `#` headings — notebooks that style their headers must still get sections
+    hhtml = parse_notebook({"cells": [
+        {"cell_type": "markdown",
+         "source": "<h1 style='color:cyan'> Demonstration: Single Ensemble "
+                   "</h1>"},
+        {"cell_type": "code", "source": "z = 1", "outputs": []},
+        {"cell_type": "markdown", "source": '<h2 class="x">Details</h2>'},
+        {"cell_type": "code", "source": "z2 = 2", "outputs": []}]})
+    assert any(s.title == "Demonstration: Single Ensemble" and s.level == 1
+               for s in hhtml.sections)
+    assert any(s.title == "Details" and s.level == 2 for s in hhtml.sections)
+    assert hhtml.title == "Demonstration: Single Ensemble"
+    # the heading tag itself is consumed (not left as prose in a note); an empty
+    # <h1></h1> is NOT a heading; markdown `#` still works
+    assert _lead_heading("<h1 style='c'>Hi</h1>") == (1, "Hi", "")
+    assert _lead_heading("<h3>Deep</h3>\n\nbody") == (3, "Deep", "body")
+    assert _lead_heading("<h1></h1>") is None
+    assert _lead_heading("# Plain")[1] == "Plain"
     # headings are POSITIONAL: two sections sharing a title stay distinct and
     # in order — content is never merged across parents (regression guard)
     ddoc = parse_notebook({"cells": [
@@ -10010,12 +10058,17 @@ def _self_test() -> None:
     assert _title_from_code(
         "import x\n\ndef a():\n    pass\n\ndef b():\n    pass") \
         == ("2 functions + code", False)
-    # raw HTML in markdown renders (allowlist-sanitized) with a toggle
-    assert '<h1 style="color:cyan"> Universal </h1>' in out
+    # a raw HTML <h1> heading (with an inline style) registers as a section,
+    # exactly like a `#` heading (the raw transparency view still shows the
+    # authored HTML; the semantic document gets a real section)
+    assert any(s.title == "Universal" for s in doc.sections)
+    assert any(s.title == "Universal" and s.level == 1 for s in doc.sections)
+    # the rest of the cell is still a note, allowlist-sanitized, with a toggle;
+    # inline styles on safe tags survive (previously proven via the h1)
+    assert '<div style="color:cyan">styled block</div>' in out
     assert "<p>plain paragraph</p>" in out
     # the rendered note must not contain a live script tag (the escaped
     # source lives separately in the note-src <pre>)
-    assert '<div class="note"><h1 style="color:cyan"> Universal ' in out
     assert 'class="note-src code"' in out and "htmltoggle" in out
     assert "Show raw HTML" in out
     # allowlist reconstruction: only safe tags/attrs come back out

@@ -1729,9 +1729,6 @@ body.slide-editing .apptop{display:none;}
   text-transform:uppercase;color:var(--amber);}
 .et-hint{font-size:11px;color:#7e93a4;}
 .et-div{width:1px;height:22px;background:#ffffff26;flex:none;margin:0 3px;}
-/* the Notebooks popover sits on the right of the tool bar, so it drops down
-   right-aligned to stay on-screen */
-#edit-tools .dc-nbs-menu{left:auto;right:0;}
 /* the "+ Shapes" dropdown */
 .sh-drop{position:relative;display:inline-block;}
 #sh-btn[aria-pressed="true"]{background:var(--cyan-deep);
@@ -5227,7 +5224,7 @@ layout from the diagrams (full, halves, rows, quarters, a
 <li>The editor is PowerPoint-style: <b>+ Text</b>, <b>+ Arrow</b>, and
 <b>+ Shapes</b> (rectangle, ellipse, star, arrow, cloud, and more).
 Select anything for colours, text size, line thickness, dash and fill;
-use <b>Notebook view</b> to scroll your cells and jump back.</li>
+use <b>Swap to notebooks</b> to scroll your cells and swap back.</li>
 <li><b>&#9654; Present</b> plays full screen. Arrow keys &larr;/&rarr;
 move through the story; on slides with code, &darr; descends the
 <b>code trail</b> &mdash; every cell that made the figure, one per
@@ -5386,8 +5383,8 @@ through Ko-fi. Thank you.</p>
             spellcheck="false" autocomplete="off">
         </div>
         <button class="dbtn" id="dc-edit"
-          title="Open this slide full-screen; add text, arrows and boxes">
-          &#9998; Edit slide</button>
+          title="Swap to the slide editor — add text, arrows and boxes">
+          &#9998; Swap to edit view</button>
       </div>
       <div class="dc-block dc-film">
         <div class="film-list" id="film-list"></div>
@@ -5398,6 +5395,13 @@ through Ko-fi. Thank you.</p>
       <div class="edit-tools" id="edit-tools" hidden>
         <button class="dbtn primary" id="dc-play"
           title="Play the presentation fullscreen">&#9654; Present</button>
+        <div class="dc-menuwrap">
+          <button class="dbtn" id="dc-nbs-btn" aria-haspopup="true"
+            aria-expanded="false"
+            title="Notebooks that went into this presentation">&#128218;
+            Open notebooks</button>
+          <div class="dc-menu dc-nbs-menu" id="dc-nbs-menu" hidden></div>
+        </div>
         <button class="dbtn et" data-tool="cell"
           aria-pressed="false"
           title="Drop a notebook card onto the slide — you pick which one from
@@ -5422,15 +5426,8 @@ through Ko-fi. Thank you.</p>
         <span class="deck-spring"></span>
         <button class="dbtn viewtoggle" id="et-notebook"
           title="Bring up your notebooks in the editor to scroll or pick
- cells — the slide is right here when you switch back">&#9636;
-          Notebook view</button>
-        <div class="dc-menuwrap">
-          <button class="dbtn" id="dc-nbs-btn" aria-haspopup="true"
-            aria-expanded="false"
-            title="Notebooks that went into this presentation">&#128218;
-            Open notebooks</button>
-          <div class="dc-menu dc-nbs-menu" id="dc-nbs-menu" hidden></div>
-        </div>
+ cells — swap back to the slide any time">&#9636;
+          Swap to notebooks</button>
         <span class="et-fmt" id="et-fmt" hidden>
           <span class="fmt-lab" id="fmt-txlab" hidden>T</span>
           <button class="sw" data-c="#ff6b57"
@@ -8060,7 +8057,7 @@ through Ko-fi. Thank you.</p>
       bs.className='slide slide-blank';
       if(mode==='view'&&!(s.annots||[]).length){
         bs.innerHTML='<p class="slide-emptyhint">Empty slide — pick a '
-          +'layout or use ✎ Edit slide.</p>';
+          +'layout or use ✎ Swap to edit view.</p>';
       }
       stage.appendChild(bs);
     }
@@ -8427,14 +8424,17 @@ through Ko-fi. Thank you.</p>
       if(on&&pressed!==undefined)
         el.setAttribute('aria-pressed',pressed.toString());
     }
-    /* a markdown cell frame is text too — it gets the same colour controls */
-    var cellText=false;
+    /* cellText = a resizable text-ish cell (A-/A+ content zoom applies to any
+       non-figure cell). noteCell = a MARKDOWN note specifically — only its
+       rendered .note carries a colour, so ONLY it gets the colour swatches. */
+    var cellText=false,noteCell=false;
     if(kind==='cell'&&a.ref){
       var ci=resolveRef(a.ref);
       cellText=!!ci&&ci.kind!=='figure'&&ci.kind!=='diagnostic';
+      noteCell=!!ci&&ci.kind==='note';
     }
     $$('.sw:not(.swbg)',bar).forEach(function(sw){
-      sw.hidden=(kind==='cell'&&!cellText);
+      sw.hidden=(kind==='cell'&&!noteCell);
       var cur_=(kind==='cell')?(a.txcol||''):(a.color||defaultColor(kind));
       sw.setAttribute('aria-pressed',(cur_===sw.dataset.c).toString());
     });
@@ -8464,8 +8464,8 @@ through Ko-fi. Thank you.</p>
     show('#fmt-front',isNum&&kind!=='arrow');
     show('#fmt-back',isNum&&kind!=='arrow');
     var plainText=isText&&typeof selAnnot==='number';
-    var showBg=plainText||cellText;
-    show('#fmt-txlab',(isText&&kind!=='cell')||cellText);
+    var showBg=plainText||noteCell;
+    show('#fmt-txlab',(isText&&kind!=='cell')||noteCell);
     show('#fmt-bglab',showBg);
     $$('.swbg',bar).forEach(function(sw){
       sw.hidden=!showBg;
@@ -9183,7 +9183,7 @@ through Ko-fi. Thank you.</p>
     if(eb){
       eb.disabled=!s||mode==='edit';
       eb.innerHTML=(mode==='edit')
-        ?'&#10003; Editing this slide':'&#9998; Edit slide';
+        ?'&#10003; Editing this slide':'&#9998; Swap to edit view';
     }
   }
   /* the current slide's interactive frame editor — embedded inline as
@@ -9737,8 +9737,9 @@ through Ko-fi. Thank you.</p>
     });
   })();
   /* ---- slide view <-> notebook view ----
-     "Notebook view" brings the notebooks up inside the editor (create mode);
-     it never leaves the presentation. "Edit slide" takes you back. */
+     "Swap to notebooks" brings the notebooks up inside the editor (create
+     mode); it never leaves the presentation. "Swap to edit view" takes you
+     back to the slide. */
   var nbViewBtn=$('#et-notebook');
   if(nbViewBtn) nbViewBtn.addEventListener('click',function(){
     setUIMode('create');
