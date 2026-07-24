@@ -1605,9 +1605,14 @@ def render_nav(doc: Document) -> str:
                 parts.append('<span class="navkey-div" aria-hidden="true">'
                              '</span>')
             first = False
+            shown: set[str] = set()   # one dot per label within a group
             for kc in kcs:
+                lab = labels.get(kc, kc)
+                if lab in shown:       # e.g. k-metric + k-print both "print"
+                    continue
+                shown.add(lab)
                 parts.append(f'<span class="nk {kc}"><span class="dot">'
-                             f'</span>{labels.get(kc, kc)}</span>')
+                             f'</span>{lab}</span>')
         parts.append('</div>')
     for s in doc.sections:
         figs = sum(1 for it in s.items if it.kind in ("figure", "diagnostic"))
@@ -4747,18 +4752,24 @@ _DECK_HTML = """
     </aside>
     <div class="deck-stagewrap" id="deck-stagewrap">
       <div class="edit-tools" id="edit-tools" hidden>
-        <span class="et-label">edit slide</span>
+        <button class="dbtn et et-bigcell" data-tool="cell"
+          aria-pressed="false"
+          title="Drop a notebook card onto the slide — you pick which one from
+ your notebook">&#43; Notebook cell</button>
+        <span class="et-div" aria-hidden="true"></span>
         <button class="dbtn et" data-tool="select"
           aria-pressed="true">Select</button>
         <button class="dbtn et" data-tool="text" aria-pressed="false">
           + Text</button>
         <button class="dbtn et" data-tool="arrow" aria-pressed="false">
           + Arrow</button>
-        <button class="dbtn et" data-tool="rect" aria-pressed="false">
-          + Box</button>
-        <button class="dbtn et" data-tool="cell" aria-pressed="false"
-          title="A resizable frame holding any notebook card">
-          + Cell</button>
+        <span class="sh-drop" id="sh-drop">
+          <button class="dbtn" id="sh-btn" aria-haspopup="true"
+            aria-expanded="false"
+            title="Draw a shape (rectangle, ellipse, arrow, star, …)">
+            + Shapes &#9662;</button>
+          <div class="sh-menu" id="sh-menu" hidden></div>
+        </span>
         <span class="et-fmt" id="et-fmt" hidden>
           <span class="fmt-lab" id="fmt-txlab" hidden>T</span>
           <button class="sw" data-c="#ff6b57"
@@ -4830,6 +4841,9 @@ _DECK_HTML = """
         </span>
         <span class="et-hint" id="et-hint"></span>
         <span class="deck-spring"></span>
+        <button class="dbtn viewtoggle" id="et-notebook"
+          title="Switch to the notebook to scroll your cells — come back to the
+ slide any time">&#9636; Notebook view</button>
         <button class="dbtn" id="et-del" disabled
           title="Delete the selected item (Del)">Delete</button>
         <button class="dbtn primary" id="et-done"
@@ -4869,6 +4883,8 @@ _DECK_HTML = """
   <span class="deck-spring"></span>
   <button class="dbtn" id="pick-cancel">Cancel (Esc)</button>
 </div>
+<button class="slide-return" id="slide-return" hidden
+  title="Back to editing your slide">&#9645; Back to slide</button>
 """
 
 _DECK_CSS = r"""
@@ -5398,6 +5414,44 @@ body.slide-editing .apptop{display:none;}
 .et-label{font-family:var(--mono);font-size:10px;letter-spacing:.18em;
   text-transform:uppercase;color:var(--amber);}
 .et-hint{font-size:11px;color:#7e93a4;}
+/* the prominent "+ Notebook cell" button — the main way to add content */
+.dbtn.et-bigcell{background:var(--cyan);border-color:var(--cyan);color:#fff;
+  font-weight:700;font-size:13px;padding:9px 16px;letter-spacing:.01em;
+  box-shadow:0 2px 10px #39a9c04d;}
+.dbtn.et-bigcell:hover{background:var(--cyan-deep);border-color:var(--cyan-deep);}
+.dbtn.et-bigcell[aria-pressed="true"]{background:var(--cyan-deep);
+  box-shadow:0 0 0 2px #bfeaf5 inset;}
+.et-div{width:1px;height:22px;background:#ffffff26;flex:none;margin:0 3px;}
+/* the "+ Shapes" dropdown */
+.sh-drop{position:relative;display:inline-block;}
+.sh-menu{position:absolute;top:calc(100% + 5px);left:0;z-index:60;
+  background:#16273a;border:1px solid #ffffff26;border-radius:9px;padding:6px;
+  display:grid;grid-template-columns:repeat(3,1fr);gap:4px;
+  box-shadow:0 14px 38px #0009;width:210px;}
+.sh-menu[hidden]{display:none;}
+.sh-opt{display:flex;flex-direction:column;align-items:center;gap:3px;
+  background:none;border:1px solid transparent;border-radius:7px;
+  padding:7px 4px 5px;cursor:pointer;color:#c9d6e2;font-family:var(--sans);}
+.sh-opt:hover{background:#39a9c022;border-color:#39a9c066;color:#fff;}
+.sh-ico{width:26px;height:22px;display:block;}
+.sh-ico path,.sh-ico rect,.sh-ico ellipse,.sh-ico text{transition:fill .1s;}
+.sh-opt-t{font-size:9.5px;letter-spacing:.02em;}
+.dbtn.viewtoggle{border-color:#39a9c05c;color:#8fd4e4;}
+.dbtn.viewtoggle:hover{border-color:var(--cyan);color:#fff;
+  background:#39a9c01e;}
+/* the floating "back to slide" toggle shown while scrolling the notebook */
+.slide-return{position:fixed;left:calc(var(--presrail-w) + 16px);bottom:20px;
+  z-index:130;font-family:var(--sans);font-size:13px;font-weight:600;
+  background:var(--cyan);border:1px solid var(--cyan);color:#fff;
+  border-radius:22px;padding:10px 18px;cursor:pointer;
+  box-shadow:0 8px 26px #0007;}
+.slide-return:hover{background:var(--cyan-deep);}
+.slide-return[hidden]{display:none;}
+/* SVG shapes fill their frame; the div carries no border/box for these */
+.an-rect.an-svgshape{border:none!important;border-radius:0;
+  background:none!important;}
+.an-shape-svg{position:absolute;inset:0;width:100%;height:100%;
+  overflow:visible;display:block;pointer-events:none;}
 .dbtn.et[aria-pressed="true"]{background:var(--cyan-deep);
   border-color:var(--cyan-deep);color:#fff;}
 .dbtn.etm{padding:5px 9px;}
@@ -5483,9 +5537,17 @@ ul.an-ul li{margin:.18em 0;white-space:pre-wrap;}
    Replace and part-picker all return only when the frame is SELECTED, so you
    can read the slide as it will present. */
 .deck.editing .an-cell{cursor:move;background:none;border-color:transparent;}
-.deck.editing .an-cell .an-cellhead{display:none;}
 .deck.editing .an-cell.sel{border-color:var(--cyan);background:#0b141d88;}
-.deck.editing .an-cell.sel .an-cellhead{display:flex;}
+/* an EMPTY frame keeps its dashed dark placeholder box (a card goes here) */
+.deck.editing .an-cell.empty{background:#0e192699;border-color:#39a9c05c;}
+/* the title header is an OVERLAY (out of flow) shown only when selected, so
+   selecting a frame never reflows/shrinks the figure underneath it */
+.deck.editing .an-cell .an-cellhead,
+.pane.filled .an-cellhead{position:absolute;top:0;left:0;right:0;z-index:2;
+  display:none;padding:7px 30px 10px 12px;
+  background:linear-gradient(#0b141de0,#0b141d00);}
+.deck.editing .an-cell.sel .an-cellhead,
+.pane.filled.active .an-cellhead{display:flex;}
 .deck:not(.editing) .an-cell.empty{display:none;}
 /* clean playback: a frame is just its content — no header title, no
    badge, no frame border (the editor/builder keep them for orientation) */
@@ -5561,9 +5623,6 @@ ul.an-ul li{margin:.18em 0;white-space:pre-wrap;}
 /* the part-picker shows only for the SELECTED frame (not on hover) */
 .deck.editing .an-cell.sel .cellparts,
 .pane.filled.active .cellparts{display:flex;}
-/* pane-editor preview: the title only on the active pane, else just content */
-.pane.filled .an-cellhead{display:none;}
-.pane.filled.active .an-cellhead{display:flex;}
 .cellpartbtn{font-family:var(--mono);font-size:9.5px;letter-spacing:.04em;
   background:#0e1926ee;border:1px solid #ffffff2b;border-radius:5px;
   color:#c9d6e2;padding:3px 7px;cursor:pointer;line-height:1;}
@@ -6138,6 +6197,60 @@ _DECK_JS = r"""
     return NODE_FILL[cks[0]]||NODE_FILL[st.kind]||'#8ba0b2';
   }
   var SVGNS='http://www.w3.org/2000/svg';
+  /* ---- shapes for the "+ Shapes" tool. Geometric ones are SVG <path>s in a
+     0..100 box (stretched to the frame, non-scaling stroke); !/? are glyphs.
+     'rect' + 'ellipse' stay CSS-drawn (see the an-rect renderer). ---- */
+  var SHAPE_PATHS={
+    triangle:'M50 6 L95 92 L5 92 Z',
+    diamond:'M50 4 L96 50 L50 96 L4 50 Z',
+    pentagon:'M50 5 L95 39 L77 93 L23 93 L5 39 Z',
+    hexagon:'M27 6 H73 L97 50 L73 94 H27 L3 50 Z',
+    star:'M50 3 L61 37 H97 L68 59 L79 95 L50 73 L21 95 L32 59 L3 37 H39 Z',
+    cross:'M37 5 H63 V37 H95 V63 H63 V95 H37 V63 H5 V37 H37 Z',
+    arrow:'M5 36 H60 V18 L96 50 L60 82 V64 H5 Z',
+    heart:'M50 90 C6 56 12 16 50 40 C88 16 94 56 50 90 Z',
+    cloud:'M30 82 C12 82 6 58 24 52 C20 30 52 22 58 38 '
+      +'C72 26 92 40 84 56 C98 58 96 82 78 82 Z',
+    bubble:'M8 8 H92 V66 H44 L24 90 V66 H8 Z',
+    lightning:'M58 4 L20 56 H46 L38 96 L82 40 H54 Z'
+  };
+  var SHAPE_GLYPH={exclaim:'!',question:'?'};
+  /* menu order + short labels */
+  var SHAPE_LIST=[
+    ['rect','Rectangle'],['ellipse','Ellipse'],['triangle','Triangle'],
+    ['diamond','Diamond'],['pentagon','Pentagon'],['hexagon','Hexagon'],
+    ['star','Star'],['cross','Plus'],['arrow','Arrow'],['heart','Heart'],
+    ['cloud','Cloud'],['bubble','Speech'],['lightning','Bolt'],
+    ['exclaim','Exclaim'],['question','Question']];
+  function drawShapeSvg(shp,col,sw,dash,fill){
+    var svg=document.createElementNS(SVGNS,'svg');
+    svg.setAttribute('class','an-shape-svg');
+    svg.setAttribute('viewBox','0 0 100 100');
+    if(SHAPE_GLYPH[shp]){
+      svg.setAttribute('preserveAspectRatio','xMidYMid meet');
+      var tx=document.createElementNS(SVGNS,'text');
+      tx.setAttribute('x','50');tx.setAttribute('y','54');
+      tx.setAttribute('text-anchor','middle');
+      tx.setAttribute('dominant-baseline','central');
+      tx.setAttribute('font-size','104');tx.setAttribute('font-weight','800');
+      tx.setAttribute('font-family','var(--sans)');
+      tx.setAttribute('fill',col);
+      tx.textContent=SHAPE_GLYPH[shp];
+      svg.appendChild(tx);
+    } else {
+      svg.setAttribute('preserveAspectRatio','none');
+      var p=document.createElementNS(SVGNS,'path');
+      p.setAttribute('d',SHAPE_PATHS[shp]||'');
+      p.setAttribute('fill',fill?(col+'2b'):'none');
+      p.setAttribute('stroke',col);
+      p.setAttribute('stroke-width',sw||3);
+      p.setAttribute('vector-effect','non-scaling-stroke');
+      p.setAttribute('stroke-linejoin','round');
+      if(dash) p.setAttribute('stroke-dasharray','7 6');
+      svg.appendChild(p);
+    }
+    return svg;
+  }
   function plotGraph(group,onNode){
     if(!group) return null;
     /* the dependency graph is CODE lineage — linked markdown notes ride along
@@ -6626,6 +6739,7 @@ _DECK_JS = r"""
     mono:'var(--mono)',system:'system-ui,sans-serif',
     hand:"'Segoe Print','Comic Sans MS',cursive"};
   var tool='select', selAnnot=null, picking=-1;
+  var pendingShape='rect';   /* which shape the "+ Shapes" tool draws */
   function titleProps(s,which){
     var key=which==='t'?'tprops':'sprops';
     if(!s[key]) s[key]=(which==='t')
@@ -6783,15 +6897,23 @@ _DECK_JS = r"""
           });
         }
       } else if(a.k==='rect'){
+        var shp=a.shape||'rect';
+        var col=a.color||'#ff6b57';
         var r=document.createElement('div');
-        r.className='an-item an-rect'+(selAnnot===i?' sel':'');
+        var svgShape=!!(SHAPE_PATHS[shp]||SHAPE_GLYPH[shp]);
+        r.className='an-item an-rect'+(svgShape?' an-svgshape':'')
+          +(selAnnot===i?' sel':'');
         r.style.left=a.x+'%';r.style.top=a.y+'%';
         r.style.width=(a.w||10)+'%';r.style.height=(a.h||10)+'%';
-        r.style.borderColor=a.color||'#ff6b57';
-        r.style.borderWidth=(a.sw||3)+'px';
-        r.style.borderStyle=a.dash?'dashed':'solid';
-        r.style.background=a.fill?((a.color||'#ff6b57')+'26'):'transparent';
-        if(a.shape==='ellipse') r.style.borderRadius='50%';
+        if(svgShape){
+          r.appendChild(drawShapeSvg(shp,col,a.sw||3,a.dash,a.fill));
+        } else {
+          r.style.borderColor=col;
+          r.style.borderWidth=(a.sw||3)+'px';
+          r.style.borderStyle=a.dash?'dashed':'solid';
+          r.style.background=a.fill?(col+'26'):'transparent';
+          if(shp==='ellipse') r.style.borderRadius='50%';
+        }
         applyCommon(r,a);
         r.setAttribute('data-idx',i);
         if(editing) r.appendChild(mkResize());
@@ -7040,7 +7162,8 @@ _DECK_JS = r"""
   }
   function startDraw(layer,s,kind,p0){
     var a=(kind==='rect')
-      ?{k:'rect',x:p0.x,y:p0.y,w:0,h:0,color:'#ff6b57',sw:3}
+      ?{k:'rect',x:p0.x,y:p0.y,w:0,h:0,color:'#ff6b57',sw:3,
+        shape:(pendingShape!=='rect'?pendingShape:undefined)}
       :{k:'arrow',x1:p0.x,y1:p0.y,x2:p0.x,y2:p0.y,
         color:'#ff6b57',sw:3};
     s.annots=s.annots||[];
@@ -7190,8 +7313,9 @@ _DECK_JS = r"""
     if(hint) hint.textContent=
       t==='text'?'Click on the slide to place a text box'
       :t==='arrow'?'Drag on the slide to draw an arrow'
-      :t==='rect'?'Drag on the slide to draw a box'
-      :t==='cell'?'Click on the slide to place a notebook-cell frame'
+      :t==='rect'?('Drag on the slide to draw a '
+        +(pendingShape==='rect'?'rectangle':pendingShape))
+      :t==='cell'?'Now click a card in your notebook to place it on the slide'
       :'Click an item to select; drag to move; Del removes';
   }
   function deleteSel(){
@@ -7289,8 +7413,10 @@ _DECK_JS = r"""
   onFmt('#fmt-ital',function(a){a.i=a.i?0:1;});
   onFmt('#fmt-list',function(a){a.list=a.list?0:1;});
   onFmt('#fmt-shape',function(a){
-    a.shape=(a.shape==='ellipse')?undefined:'ellipse';
-    if(a.shape===undefined) delete a.shape;});
+    /* cycle the selected shape through the whole set */
+    var order=SHAPE_LIST.map(function(p){return p[0];});
+    var ni=(order.indexOf(a.shape||'rect')+1)%order.length;
+    if(order[ni]==='rect') delete a.shape; else a.shape=order[ni];});
   onFmt('#fmt-op',function(a){
     var steps=[1,0.75,0.5,0.25];
     var cur_=a.op==null?1:a.op;
@@ -7629,7 +7755,7 @@ _DECK_JS = r"""
       loadPresentation(nm);
       cur=0;activePane=-1;
     }
-    openDeck('create');
+    openDeck('edit');   /* land straight in the slide editor */
   }
   function newPresentation(){
     var n2=1,name='presentation';
@@ -7641,7 +7767,7 @@ _DECK_JS = r"""
     pres={name:name,slides:[emptySlide()]};
     source='auto';
     cur=0;activePane=0;
-    openDeck('create');
+    openDeck('edit');   /* land straight in the slide editor */
   }
 
   function renderPresRow(){
@@ -8096,16 +8222,18 @@ _DECK_JS = r"""
   }
   function openDeck(m){
     deckEl.hidden=false;
+    var sr=$('#slide-return'); if(sr) sr.hidden=true;
     status();
     setUIMode(m||'view');
   }
-  function closeDeck(){
+  function closeDeck(fromToggle){
     try{
       if(document.fullscreenElement)
         document.exitFullscreen().catch(function(){});
     }catch(err){}
     closeVFull();
     deckEl.hidden=true;
+    if(!fromToggle){var sr=$('#slide-return'); if(sr) sr.hidden=true;}
     document.body.classList.remove('deck-open');
     document.body.classList.remove('creating-docs');
     document.body.classList.remove('slide-editing');
@@ -8144,6 +8272,75 @@ _DECK_JS = r"""
   $$('#edit-tools .et').forEach(function(b){
     b.addEventListener('click',function(){setTool(b.dataset.tool);});
   });
+  /* ---- "+ Shapes" dropdown: choose a shape, then draw it ---- */
+  function shapeIcon(shp){
+    var svg=document.createElementNS(SVGNS,'svg');
+    svg.setAttribute('class','sh-ico');svg.setAttribute('viewBox','0 0 100 100');
+    if(shp==='rect'){
+      var rc=document.createElementNS(SVGNS,'rect');
+      rc.setAttribute('x','12');rc.setAttribute('y','22');
+      rc.setAttribute('width','76');rc.setAttribute('height','56');
+      rc.setAttribute('rx','7');rc.setAttribute('fill','#c9d6e2');
+      svg.appendChild(rc);
+    } else if(shp==='ellipse'){
+      var el=document.createElementNS(SVGNS,'ellipse');
+      el.setAttribute('cx','50');el.setAttribute('cy','50');
+      el.setAttribute('rx','42');el.setAttribute('ry','33');
+      el.setAttribute('fill','#c9d6e2');svg.appendChild(el);
+    } else if(SHAPE_GLYPH[shp]){
+      var tx=document.createElementNS(SVGNS,'text');
+      tx.setAttribute('x','50');tx.setAttribute('y','56');
+      tx.setAttribute('text-anchor','middle');
+      tx.setAttribute('dominant-baseline','central');
+      tx.setAttribute('font-size','98');tx.setAttribute('font-weight','800');
+      tx.setAttribute('fill','#c9d6e2');tx.textContent=SHAPE_GLYPH[shp];
+      svg.appendChild(tx);
+    } else {
+      var p=document.createElementNS(SVGNS,'path');
+      p.setAttribute('d',SHAPE_PATHS[shp]||'');
+      p.setAttribute('fill','#c9d6e2');svg.appendChild(p);
+    }
+    return svg;
+  }
+  (function(){
+    var shBtn=$('#sh-btn'),shMenu=$('#sh-menu'),shDrop=$('#sh-drop');
+    if(!shBtn||!shMenu) return;
+    SHAPE_LIST.forEach(function(pair){
+      var opt=document.createElement('button');
+      opt.className='sh-opt';opt.type='button';opt.title=pair[1];
+      opt.dataset.shape=pair[0];
+      opt.appendChild(shapeIcon(pair[0]));
+      var t=document.createElement('span');t.className='sh-opt-t';
+      t.textContent=pair[1];opt.appendChild(t);
+      opt.addEventListener('click',function(e){
+        e.stopPropagation();
+        pendingShape=pair[0];
+        shMenu.hidden=true;shBtn.setAttribute('aria-expanded','false');
+        setTool('rect');
+      });
+      shMenu.appendChild(opt);
+    });
+    shBtn.addEventListener('click',function(e){
+      e.stopPropagation();
+      var willOpen=shMenu.hidden;
+      shMenu.hidden=!willOpen;
+      shBtn.setAttribute('aria-expanded',willOpen.toString());
+    });
+    document.addEventListener('click',function(e){
+      if(!shMenu.hidden&&shDrop&&!shDrop.contains(e.target)){
+        shMenu.hidden=true;shBtn.setAttribute('aria-expanded','false');}
+    });
+  })();
+  /* ---- slide view <-> notebook view ---- */
+  var nbViewBtn=$('#et-notebook');
+  if(nbViewBtn) nbViewBtn.addEventListener('click',function(){
+    closeDeck();
+    var sr=$('#slide-return');
+    if(sr){sr.hidden=false;
+      sr.textContent='▭ Back to '+(pres.name||'slide');}
+  });
+  var srBtn=$('#slide-return');
+  if(srBtn) srBtn.addEventListener('click',function(){openDeck('edit');});
   var downBtn=$('#deck-down');
   if(downBtn) downBtn.addEventListener('click',scrollToTrace);
   var upBtn=$('#deck-up');
@@ -9718,6 +9915,16 @@ def _self_test() -> None:
     assert 'data-lay="rows"' in out and 'data-lay="title"' in out
     assert 'id="edit-tools"' in out and 'id="dc-edit"' in out
     assert 'id="et-fmt"' in out and 'data-tool="cell"' in out
+    # builder workflow: a presentation opens in the slide EDITOR by default
+    assert out.count("openDeck('edit')") >= 2
+    # the prominent "+ Notebook cell" button, the "+ Shapes" dropdown, and the
+    # slide<->notebook view toggle
+    assert 'et-bigcell" data-tool="cell"' in out and "Notebook cell" in out
+    assert 'id="sh-btn"' in out and 'id="sh-menu"' in out and "var SHAPE_LIST" in out
+    assert 'id="et-notebook"' in out and 'id="slide-return"' in out
+    # shapes render as SVG paths (star/cloud/…) or glyphs (!/?); box+ellipse CSS
+    assert "var SHAPE_PATHS" in out and "function drawShapeSvg" in out
+    assert ".an-rect.an-svgshape" in out and "an-shape-svg" in out
     assert 'id="fmt-op"' in out and 'id="fmt-rotl"' in out
     assert 'id="theme-btn"' in out
     assert 'id="fmt-font"' in out and "body.light .apptop" in out
@@ -9735,9 +9942,13 @@ def _self_test() -> None:
     # and its chrome (border/title/Replace/parts) returns only when selected
     assert (".deck.editing .an-cell{cursor:move;background:none;"
             "border-color:transparent" in out)
-    assert ".deck.editing .an-cell .an-cellhead{display:none" in out
     assert ".deck.editing .an-cell.sel .an-cellbtn{display:block" in out
     assert ".deck.editing .an-cell.sel .cellparts" in out
+    # the empty placeholder keeps its dashed box; the header is an overlay
+    # (out of flow) so selecting a frame doesn't reflow the figure
+    assert ".deck.editing .an-cell.empty{background:#0e192699" in out
+    assert ".deck.editing .an-cell.sel .an-cellhead" in out
+    assert ".pane.filled .an-cellhead{position:absolute" in out
     pres_f = _as_presentations([{"name": "a", "folder": "paper 1",
                                  "slides": []}])
     assert pres_f[0]["folder"] == "paper 1"
