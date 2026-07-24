@@ -52,7 +52,7 @@ Grouping vs stacking, two ways to put several cells under one figure:
 Inference when `display` is absent:
     image output            -> figure
     xarray HTML repr        -> dataset
-    only text / stdout       -> metric (if short) else text
+    any text / stdout / repr -> text (badge "print")
     no output                -> code (collapsed by default)
 
 --------------------------------------------------------------------------
@@ -227,6 +227,11 @@ def _looks_like_xarray(htmltext: str) -> bool:
     return ("xr-" in htmltext) or ("xarray" in htmltext.lower())
 
 
+def _looks_like_dataframe(htmltext: str) -> bool:
+    # pandas styles its HTML table with class="dataframe"
+    return 'class="dataframe"' in htmltext or "class='dataframe'" in htmltext
+
+
 @dataclass
 class RenderedOutput:
     kind: str          # "image" | "xarray" | "html" | "text" | "error"
@@ -236,31 +241,81 @@ class RenderedOutput:
     ot: str = "print"  # output-type slug for the Output-types filter
 
 
+_NUM_RE = re.compile(r"^[-+]?(\d[\d_]*\.?\d*|\.\d+)([eE][-+]?\d+)?j?$")
+_COMPLEX_RE = re.compile(
+    r"^\(?[-+]?(\d[\d_]*\.?\d*|\.\d+)([eE][-+]?\d+)?"
+    r"[-+](\d[\d_]*\.?\d*|\.\d+)([eE][-+]?\d+)?j\)?$")
+
+
+def _has_toplevel_colon(s: str) -> bool:
+    """A ':' at the top level of the outer braces, ignoring string contents.
+    Distinguishes a dict ({'a': 1}) from a set ({'12:00', '13:00'})."""
+    quote = None
+    esc = False
+    depth = 0
+    for ch in s:
+        if quote:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == quote:
+                quote = None
+            continue
+        if ch in "'\"":
+            quote = ch
+        elif ch in "[{(":
+            depth += 1
+        elif ch in "]})":
+            depth -= 1
+        elif ch == ":" and depth == 1:
+            return True
+    return False
+
+
 def _repr_kind(text: str) -> str:
     """Guess the Python type of an execute_result repr, for the finer
-    Output-types filter (numeric / string / list / dict / …).  Falls back to
-    'value' for anything unrecognised; 'print' for empty."""
+    Output-types filter (numeric / string / list / dict / series / …). Only
+    types actually seen are ever surfaced, so this can be as granular as it
+    likes. Falls back to 'value' for anything unrecognised; 'print' for empty."""
     s = text.strip()
     if not s:
         return "print"
     c = s[0]
+    if c == "<":                                   # <function …>, <Foo object …>
+        if s.startswith(("<function", "<built-in function", "<built-in method",
+                         "<bound method", "<lambda")):
+            return "function"
+        if s.startswith("<class "):
+            return "class"
+        if s.startswith("<module "):
+            return "module"
+        return "object"
     if c == "[":
         return "list"
     if c == "{":
-        # dict has ':' before the first closing brace; otherwise it's a set
-        return "dict" if ":" in s.split("}", 1)[0] else "set"
+        # {} is an empty dict; a set has no top-level ':' (quote-aware)
+        return "dict" if (s == "{}" or _has_toplevel_colon(s)) else "set"
     if c == "(":
-        return "tuple"
+        # a full complex number reprs parenthesised, e.g. "(1+2j)"
+        return "numeric" if _COMPLEX_RE.match(s) else "tuple"
     if c in "'\"" or s[:2] in ("b'", 'b"', "r'", 'r"', "f'", 'f"'):
         return "string"
     if s in ("True", "False"):
         return "bool"
     if s == "None":
         return "none"
-    if re.match(r"^[-+]?(\d[\d_]*\.?\d*|\.\d+)([eE][-+]?\d+)?j?$", s):
+    if s.lstrip("+-") in ("inf", "nan"):
         return "numeric"
-    if s.startswith(("array(", "tensor(", "np.", "matrix(", "DataFrame")):
+    if _NUM_RE.match(s):
+        return "numeric"
+    if s.startswith(("array(", "tensor(", "np.", "matrix(")):
         return "array"
+    if "\n" in s:                                  # multi-line reprs
+        if re.search(r"\[\d+ rows? x \d+ columns?\]\s*$", s):
+            return "dataframe"                      # pandas DataFrame text repr
+        if re.search(r"(\n|, )dtype:\s*\S+\s*$", s):
+            return "series"                         # pandas Series text repr
     return "value"
 
 
@@ -300,6 +355,11 @@ def render_outputs(outputs: list[dict]) -> list[RenderedOutput]:
                         "xarray",
                         f'<div class="xr-wrap ot-dataset">{htmltext}</div>',
                         has_xarray=True, ot="dataset"))
+                elif _looks_like_dataframe(htmltext):
+                    rendered.append(RenderedOutput(
+                        "html",
+                        f'<div class="rich ot-dataframe">{htmltext}</div>',
+                        ot="dataframe"))
                 else:
                     rendered.append(RenderedOutput(
                         "html",
@@ -400,8 +460,10 @@ def _infer_kind(item_outputs: list[RenderedOutput]) -> str:
         return "dataset"
     text_like = [o for o in item_outputs if o.kind in ("text", "html", "error")]
     if text_like:
-        total = sum(len(o.payload) for o in text_like)
-        return "metric" if total < 900 else "text"
+        # any printed output is "print" — a bare expression (len(x)), a
+        # print(), a repr. (We used to split short output off as "metric",
+        # but in a notebook that is just a printed value too.)
+        return "text"
     return "code"
 
 
@@ -748,6 +810,75 @@ def _cell_names(code: str) -> tuple[set[str], set[str]]:
     return set(first_def), uses
 
 
+def _mentioned_names(note: "Item", all_defs: set[str]) -> set[str]:
+    """Variable names a markdown note refers to. An inline-code span (`name`)
+    is a strong signal at any length. A BARE word only counts when it is
+    "code-shaped" -- snake_case or containing a digit (e.g. ridge_index,
+    z500) -- so prose like "warm events" or "seasonal cycle" does not match a
+    plain-word variable named `warm` / `seasonal`; those need backticks."""
+    text = f"{note.title}\n{note.caption}"
+    found: set[str] = set()
+    for span in re.findall(r"`([^`]+)`", text):        # `name`, `name.attr`…
+        m = re.match(r"[A-Za-z_]\w*", span.strip())
+        if m and m.group(0) in all_defs:
+            found.add(m.group(0))
+    for n in all_defs:
+        code_shaped = "_" in n or any(c.isdigit() for c in n)
+        if code_shaped and len(n) >= 3 \
+                and re.search(r"\b" + re.escape(n) + r"\b", text):
+            found.add(n)
+    return found
+
+
+def _link_notes_to_chains(doc: Document, cards: list, card_defs: dict,
+                          anc_of: dict, items_by_id: dict, order: dict) -> None:
+    """Link a markdown note into the code trace of every plot whose lineage
+    defines a variable the note names -- so the prose that explains a step
+    travels with the code into that plot's trace (and its dependency graph).
+    Notes are ignored by the presentation trail (it keeps its hasCode filter),
+    so this only enriches the docs 'Plot trace'."""
+    all_defs: set[str] = set()
+    for d in card_defs.values():
+        all_defs |= d
+    if not all_defs:
+        return
+    definers: dict[str, list] = {}
+    for _, it in cards:
+        for n in card_defs[id(it)]:
+            definers.setdefault(n, []).append(it)
+    anchor_pos: dict[str, int] = {}
+    pos = 0
+    for sec in doc.sections:
+        for it in sec.items:
+            anchor_pos[it.anchor or it.item_id] = pos
+            pos += 1
+    notes: list[tuple] = []
+    for sec in doc.sections:
+        for it in sec.items:
+            if not it.is_note:
+                continue
+            names = _mentioned_names(it, all_defs)
+            if not names:
+                continue
+            src_ids = {id(c) for n in names for c in definers.get(n, [])}
+            it.chain = [items_by_id[i].anchor or items_by_id[i].item_id
+                        for i in sorted(src_ids, key=lambda i: order.get(i, 0))]
+            notes.append((it, names))
+    if not notes:
+        return
+    for _, it in cards:
+        lineage_names = set(card_defs[id(it)])
+        for aid in anc_of[id(it)]:
+            lineage_names |= card_defs.get(aid, set())
+        extra = [nt for (nt, names) in notes if names & lineage_names]
+        if not extra:
+            continue
+        merged = list(it.chain) + [
+            (nt.anchor or nt.item_id) for nt in extra
+            if (nt.anchor or nt.item_id) not in it.chain]
+        it.chain = sorted(merged, key=lambda a: anchor_pos.get(a, 0))
+
+
 def _build_chains(doc: Document) -> None:
     """Attach to every card the ordered chain of upstream cards feeding it.
 
@@ -755,7 +886,8 @@ def _build_chains(doc: Document) -> None:
     card that last assigned each name this card reads) and declared
     `depends:` ids. The transitive closure, in document order, becomes
     `item.chain` -- the full "open data -> transform -> plot" story shown
-    under a figure's Show code.
+    under a figure's Show code. A final pass also links markdown notes that
+    name a variable into the chains that define it.
     """
     cards: list[tuple[int, Item]] = []
     for sec in doc.sections:
@@ -769,6 +901,7 @@ def _build_chains(doc: Document) -> None:
     items_by_id = {id(it): it for _, it in cards}
 
     deps: dict[int, set[int]] = {id(it): set() for _, it in cards}
+    card_defs: dict[int, set[str]] = {id(it): set() for _, it in cards}
     last: dict[str, Item] = {}          # name -> card that last assigned it
     for _, it in cards:
         for m in sorted(it.members, key=lambda m: m["idx"]):
@@ -779,6 +912,7 @@ def _build_chains(doc: Document) -> None:
                     deps[id(it)].add(id(src))
             for n in defs:
                 last[n] = it
+            card_defs[id(it)] |= defs
         for d in it.depends:
             src = by_node.get(d)
             if src is not None and src is not it:
@@ -790,11 +924,15 @@ def _build_chains(doc: Document) -> None:
                 seen.add(p)
                 ancestors(p, seen)
 
+    anc_of: dict[int, set[int]] = {}
     for _, it in cards:
         seen: set[int] = set()
         ancestors(id(it), seen)
+        anc_of[id(it)] = seen
         it.chain = [items_by_id[i].anchor or items_by_id[i].item_id
                     for i in sorted(seen, key=lambda i: order.get(i, 0))]
+
+    _link_notes_to_chains(doc, cards, card_defs, anc_of, items_by_id, order)
 
 
 def parse_notebook(nb: dict, title: str | None = None) -> Document:
@@ -1253,8 +1391,8 @@ def md_to_html(text: str) -> str:
 
 _BADGE = {
     "figure": "figure", "dataset": "dataset", "transform": "transform",
-    "diagnostic": "diagnostic", "metric": "metric", "text": "print",
-    "note": "note", "code": "code",
+    "diagnostic": "diagnostic", "metric": "print", "text": "print",
+    "note": "markdown", "code": "code",
 }
 
 
@@ -1427,15 +1565,27 @@ def render_item(item: Item) -> str:
 
 def render_nav(doc: Document) -> str:
     parts = ['<nav class="nav" aria-label="Analysis sections">']
-    # key: one entry per item kind (incl. code subtypes) that occurs — shown
-    # at the TOP of the sidebar
+    # key: one entry per item kind (incl. code subtypes) present, GROUPED
+    # (markdown | plots | code | output) with a divider between groups — so the
+    # two "print" dots (a CODE cell that prints vs a printed VALUE) read apart.
+    # Shown at the TOP of the sidebar.
     labels = {"k-figure": "figure", "k-dataset": "dataset",
-              "k-transform": "transform", "k-metric": "metric",
-              "k-note": "note", "k-print": "print", "k-code": "code",
+              "k-transform": "transform", "k-metric": "print",
+              "k-note": "markdown", "k-print": "print", "k-code": "code",
               "ckmain-imports": "imports", "ckmain-function": "function",
               "ckmain-data": "data", "ckmain-constant": "constant",
               "ckmain-settings": "settings", "ckmain-plotting": "plotting",
               "ckmain-print": "print"}
+
+    def _key_group(kc: str) -> str:
+        if kc == "k-note":
+            return "markdown"
+        if kc == "k-figure":
+            return "plots"
+        if kc in ("k-dataset", "k-print", "k-metric"):
+            return "output"
+        return "code"        # ckmain-* + k-code + k-transform
+
     seen: list[str] = []
     for s in doc.sections:
         for it in s.items:
@@ -1446,9 +1596,18 @@ def render_nav(doc: Document) -> str:
                 seen.append(kc)
     if seen:
         parts.append('<div class="navkey"><span class="navkey-h">key</span>')
-        for kc in seen:
-            parts.append(f'<span class="nk {kc}"><span class="dot"></span>'
-                         f'{labels.get(kc, kc)}</span>')
+        first = True
+        for grp in ("markdown", "plots", "code", "output"):
+            kcs = [kc for kc in seen if _key_group(kc) == grp]
+            if not kcs:
+                continue
+            if not first:
+                parts.append('<span class="navkey-div" aria-hidden="true">'
+                             '</span>')
+            first = False
+            for kc in kcs:
+                parts.append(f'<span class="nk {kc}"><span class="dot">'
+                             f'</span>{labels.get(kc, kc)}</span>')
         parts.append('</div>')
     for s in doc.sections:
         figs = sum(1 for it in s.items if it.kind in ("figure", "diagnostic"))
@@ -1780,6 +1939,10 @@ body.light .navitem.ckmain-print .dot,body.light .nk.ckmain-print .dot{
   font-family:var(--mono);color:var(--chrome-ink-2);}
 .nk .dot{width:6px;height:6px;border-radius:2px;flex:none;
   background:var(--chrome-ink-2);}
+/* a thin rule marking the markdown | plots | code | output groups */
+.navkey-div{width:1px;height:11px;flex:none;align-self:center;
+  background:var(--chrome-line);margin:0 -3px;}
+body.light .navkey-div{background:var(--line);}
 
 /* ---------- rail graph (signature) ---------- */
 .railgraph{border-top:1px solid var(--chrome-line);padding:14px 14px 20px;
@@ -1956,7 +2119,9 @@ body:not(.light) .docbar-p{color:#8ba0b2;}
   font-size:11px;color:var(--ink-3);letter-spacing:.02em;}
 .cb-out.part-fold:hover::before{color:var(--cyan-deep);}
 .cb-out.part-fold.part-open{cursor:default;border:none;padding:0;}
-.cb-out.part-fold.part-open>*{display:revert;}
+/* :not(.ot-off) so a child hidden by the Output-types filter stays hidden
+   even when the collapsed output is opened */
+.cb-out.part-fold.part-open>*:not(.ot-off){display:revert;}
 .cb-out.part-fold.part-open::before{display:none;}
 
 .cardhead{display:flex;align-items:center;gap:10px;margin-bottom:12px;
@@ -2364,17 +2529,23 @@ body.light .appbar-div{background:#00000022;}
   align-items:center;}
 .appbar .toggle:hover{border-color:var(--cyan);color:#fff;}
 .appbar .toggle.tv.off{color:#69788a;}
-.appbar .menubtn{display:inline-flex;align-items:center;
-  justify-content:center;width:34px;height:34px;
+/* the sidebar toggle now lives on the tab line, next to Open + the tabs
+   (the doc-navigation controls), not up among the filters */
+.tabsrow .menubtn{display:inline-flex;align-items:center;
+  justify-content:center;width:30px;height:29px;margin:7px 2px 0 8px;
   border:1px solid #ffffff22;background:none;
-  border-radius:var(--rad);cursor:pointer;flex:none;}
-.appbar .menubtn span,.appbar .menubtn span::before,
-.appbar .menubtn span::after{content:"";display:block;width:15px;
+  border-radius:8px;cursor:pointer;flex:none;}
+.tabsrow .menubtn:hover{border-color:var(--cyan);}
+.tabsrow .menubtn span,.tabsrow .menubtn span::before,
+.tabsrow .menubtn span::after{content:"";display:block;width:14px;
   height:2px;background:#cdd9e3;position:relative;}
-.appbar .menubtn span::before{position:absolute;top:-5px;}
-.appbar .menubtn span::after{position:absolute;top:5px;}
-.appbar .menubtn[aria-pressed="true"]{background:#39a9c022;
+.tabsrow .menubtn span::before{position:absolute;top:-5px;}
+.tabsrow .menubtn span::after{position:absolute;top:5px;}
+.tabsrow .menubtn[aria-pressed="true"]{background:#39a9c022;
   border-color:#39a9c088;}
+body.light .tabsrow .menubtn{border-color:var(--line);}
+body.light .tabsrow .menubtn span,body.light .tabsrow .menubtn span::before,
+body.light .tabsrow .menubtn span::after{background:var(--ink-2);}
 /* Open lives on the tab line now (a prominent + at the start), so it reads
    as "add a document tab" rather than getting lost among the filter toggles */
 .tabrow-open{font-family:var(--mono);font-size:11px;letter-spacing:.04em;
@@ -2724,6 +2895,12 @@ body.creating-docs .apptop{
 .ckf-dot.ot-sw-none{background:#7a8794;}
 .ckf-dot.ot-sw-array{background:#5b7589;}
 .ckf-dot.ot-sw-value{background:#8a93a0;}
+.ckf-dot.ot-sw-dataframe{background:#4d90c0;}
+.ckf-dot.ot-sw-series{background:#5aa0b8;}
+.ckf-dot.ot-sw-function{background:#46a892;}
+.ckf-dot.ot-sw-class{background:#9a7cc0;}
+.ckf-dot.ot-sw-module{background:#8a6d4a;}
+.ckf-dot.ot-sw-object{background:#8a93a0;}
 .ckf-empty{color:#7e93a4;font-size:11px;padding:8px;}
 #ck-filter-btn.on,#ot-filter-btn.on{border-color:var(--cyan);color:#fff;
   background:#39a9c022;}
@@ -2750,10 +2927,6 @@ body.light .appbar .toggle{border-color:var(--line);background:#fff;
 body.light .appbar .toggle:hover{border-color:var(--cyan);
   color:var(--ink);}
 body.light .appbar .toggle.tv.off{color:var(--ink-3);}
-body.light .appbar .menubtn{border-color:var(--line);}
-body.light .appbar .menubtn span,
-body.light .appbar .menubtn span::before,
-body.light .appbar .menubtn span::after{background:var(--ink-2);}
 body.light .tabsrow{background:#e9eef3;}
 body.light .tab{border-color:var(--line);background:#00000006;
   color:var(--ink-3);}
@@ -3286,12 +3459,19 @@ _JS = r"""
   /* advanced OUTPUT-type filter: hide specific printed-output kinds (print,
      dataset, result, error) — like the code-type filter, but for output */
   var otHidden={};
-  var OT_TYPES=['print','dataset','result','error'];
+  /* preferred ordering; any other slug present (a finer repr type) is appended
+     after these so the menu never drops a type it doesn't already know */
+  var OT_TYPES=['print','numeric','string','bool','none','list','tuple','set',
+    'dict','array','series','dataframe','dataset','function','class','module',
+    'object','value','result','error'];
   function presentOtTypes(){
     var set={};
     $$('.nbshell .cb-out[data-ot]').forEach(function(c){
       c.dataset.ot.split(' ').forEach(function(t){if(t)set[t]=1;});});
-    return OT_TYPES.filter(function(t){return set[t];});
+    var out=OT_TYPES.filter(function(t){return set[t];});
+    Object.keys(set).forEach(function(t){
+      if(OT_TYPES.indexOf(t)<0) out.push(t);});   /* unknown slugs still show */
+    return out;
   }
   function renderOtMenu(){
     var m=$('#ot-filter-menu'); if(!m) return;
@@ -4767,9 +4947,11 @@ body.deck-open{overflow:hidden;}
   letter-spacing:.18em;text-transform:uppercase;color:#7e93a4;
   text-align:center;display:flex;gap:10px;align-items:center;
   justify-content:center;flex-wrap:wrap;}
-.vo-xall,.vo-fbtn{font-family:var(--mono);font-size:10px;letter-spacing:.06em;
+/* match the docs top-bar toggles so the trail feels part of the same tool */
+.vo-xall,.vo-fbtn{font-family:var(--mono);font-size:11px;letter-spacing:.04em;
   text-transform:none;background:#ffffff0a;border:1px solid #ffffff22;
-  color:#cdd9e3;border-radius:5px;padding:3px 9px;cursor:pointer;}
+  color:#cdd9e3;border-radius:var(--rad);padding:6px 12px;cursor:pointer;
+  display:inline-flex;align-items:center;gap:7px;transition:all .15s;}
 .vo-xall:hover,.vo-fbtn:hover{border-color:var(--cyan);color:#fff;}
 /* the trail's Code-types / Output-types filter dropdowns */
 .vo-fdrop{position:relative;display:inline-block;}
@@ -4804,8 +4986,23 @@ body.deck-open{overflow:hidden;}
 .vo-sec{font-family:var(--mono);font-size:10px;font-weight:600;
   letter-spacing:.12em;text-transform:uppercase;color:#dbe7ef;
   padding:8px 2px 4px;margin-top:6px;
-  border-bottom:1px solid #ffffff1f;}
+  border-bottom:1px solid #ffffff1f;
+  display:flex;align-items:center;gap:7px;}
 .vo-col>.vo-sec:first-of-type,.vo-col-h+.vo-sec{margin-top:0;}
+/* section collapse chevron + hide eye (mirror the docs sidebar/section head) */
+.vo-sec-chev{flex:none;font-size:11px;line-height:1;color:#7e93a4;
+  cursor:pointer;transition:transform .15s,color .15s;}
+.vo-sec-chev:hover{color:#cdd9e3;}
+.vo-sec.collapsed .vo-sec-chev{transform:rotate(-90deg);}
+.vo-sec-lab{flex:1;min-width:0;cursor:pointer;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;}
+.vo-sec-eye{flex:none;font-size:11px;line-height:1;color:#7e93a4;
+  cursor:pointer;opacity:0;padding:1px 4px;border-radius:4px;
+  transition:opacity .12s,color .12s,background .12s;}
+.vo-sec:hover .vo-sec-eye{opacity:.65;}
+.vo-sec-eye:hover{opacity:1;color:#fff;background:#ffffff14;}
+.vo-sec-body{display:flex;flex-direction:column;gap:8px;}
+.vo-sec-body.vo-sec-fold{display:none;}
 .vo-subsec{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;
   color:#8ba0b2;padding:5px 2px 2px;}
 .vo-step{display:flex;flex-direction:column;background:#12202e;
@@ -4855,7 +5052,7 @@ body.deck-open{overflow:hidden;}
   display:flex;flex-direction:column;min-width:0;
   scroll-snap-align:start;}
 .vtrace{scroll-snap-align:start;display:flex;flex-direction:column;
-  gap:14px;padding:26px 0 60px;min-height:70%;}
+  gap:14px;padding:64px 0 60px;min-height:70%;}   /* top clears the ↑ arrow */
 .vtrace .vo-groups{flex:none;align-items:flex-start;}
 .vtrace .vo-col{overflow:visible;}
 .deck-codepill{position:absolute;left:50%;transform:translateX(-50%);
@@ -5281,7 +5478,14 @@ ul.an-ul li{margin:.18em 0;white-space:pre-wrap;}
 .an-cell{position:absolute;background:#0e1926;
   border:1.5px solid #39a9c05c;border-radius:10px;overflow:hidden;
   display:flex;flex-direction:column;}
-.deck.editing .an-cell{cursor:move;}
+/* edit mode: an UNSELECTED frame is just its content — transparent (so it
+   never blocks what's behind), no border, no title header. The border, title,
+   Replace and part-picker all return only when the frame is SELECTED, so you
+   can read the slide as it will present. */
+.deck.editing .an-cell{cursor:move;background:none;border-color:transparent;}
+.deck.editing .an-cell .an-cellhead{display:none;}
+.deck.editing .an-cell.sel{border-color:var(--cyan);background:#0b141d88;}
+.deck.editing .an-cell.sel .an-cellhead{display:flex;}
 .deck:not(.editing) .an-cell.empty{display:none;}
 /* clean playback: a frame is just its content — no header title, no
    badge, no frame border (the editor/builder keep them for orientation) */
@@ -5343,7 +5547,7 @@ ul.an-ul li{margin:.18em 0;white-space:pre-wrap;}
   background:#0e1926ee;border:1px solid #39a9c066;border-radius:6px;
   color:#7fd0e0;font-family:var(--mono);font-size:10px;padding:4px 9px;
   cursor:pointer;}
-.deck.editing .an-cell:hover .an-cellbtn,
+/* Replace shows only for the SELECTED frame (not on hover) — declutter */
 .deck.editing .an-cell.sel .an-cellbtn{display:block;}
 .an-cellbtn:hover{color:#fff;border-color:var(--cyan);}
 /* which part of a cell a frame shows: code / figure / output */
@@ -5354,10 +5558,12 @@ ul.an-ul li{margin:.18em 0;white-space:pre-wrap;}
    it never covers the title header or the part badge at the top */
 .cellparts{position:absolute;bottom:5px;left:5px;right:5px;z-index:5;
   display:none;gap:3px;flex-wrap:wrap;justify-content:center;}
-.deck.editing .an-cell:hover .cellparts,
+/* the part-picker shows only for the SELECTED frame (not on hover) */
 .deck.editing .an-cell.sel .cellparts,
-.pane.filled:hover .cellparts,.pane.filled.active .cellparts{
-  display:flex;}
+.pane.filled.active .cellparts{display:flex;}
+/* pane-editor preview: the title only on the active pane, else just content */
+.pane.filled .an-cellhead{display:none;}
+.pane.filled.active .an-cellhead{display:flex;}
 .cellpartbtn{font-family:var(--mono);font-size:9.5px;letter-spacing:.04em;
   background:#0e1926ee;border:1px solid #ffffff2b;border-radius:5px;
   color:#c9d6e2;padding:3px 7px;cursor:pointer;line-height:1;}
@@ -5913,7 +6119,9 @@ _DECK_JS = r"""
     var steps=[],seen={};
     (it.chain||[]).forEach(function(anchor){
       var up=ITEMS[nsKey(it.nb,anchor)];
-      if(up&&up.hasCode&&!seen[up.ns]){seen[up.ns]=1;steps.push(up);}
+      /* markdown notes that name a lineage variable ride along in the trace */
+      if(up&&(up.hasCode||up.kind==='note')&&!seen[up.ns]){
+        seen[up.ns]=1;steps.push(up);}
     });
     if(it.hasCode&&!seen[it.ns]) steps.push(it);
     return {it:it,steps:steps,color:TRACE_COLORS[0]};
@@ -5925,13 +6133,20 @@ _DECK_JS = r"""
     settings:'#5b7589',plotting:'#39a9c0',print:'#cf9a4e',code:'#8ba0b2'};
   function nodeColor(st){
     if(st.kind==='figure'||st.kind==='diagnostic') return NODE_FILL.figure;
+    if(st.kind==='note') return NODE_FILL.note;
     var cks=st.codeKinds||[st.codeKind||'code'];
     return NODE_FILL[cks[0]]||NODE_FILL[st.kind]||'#8ba0b2';
   }
   var SVGNS='http://www.w3.org/2000/svg';
   function plotGraph(group,onNode){
-    if(!group||group.steps.length<2) return null;   /* nothing to draw */
-    var steps=group.steps,n=steps.length,idx={},i;
+    if(!group) return null;
+    /* the dependency graph is CODE lineage — linked markdown notes ride along
+       in the trace's card list but are not graph nodes (they aren't
+       computational deps, and mixing them in creates note<->definer cycles
+       that the transitive reduction can't lay out) */
+    var steps=group.steps.filter(function(s){return s.kind!=='note';});
+    if(steps.length<2) return null;                 /* nothing to draw */
+    var n=steps.length,idx={},i;
     for(i=0;i<n;i++) idx[steps[i].ns]=i;
     /* each step's ancestors that are also in this plot's set (from chain) */
     var anc=steps.map(function(s){
@@ -6033,6 +6248,10 @@ _DECK_JS = r"""
     });
     var groups=[];
     frames.forEach(function(f){
+      /* a framed markdown note carries no code trail of its own — its chain
+         now names its variables' cards (docs feature), but the presentation
+         must stay note-free */
+      if(f.it.kind==='note') return;
       var steps=[],seen2={};
       (f.it.chain||[]).forEach(function(anchor){
         var ns=nsKey(f.it.nb,anchor);
@@ -6258,27 +6477,69 @@ _DECK_JS = r"""
       var hs=document.createElement('span');
       hs.textContent=g.it.title;h.appendChild(hs);
       col.appendChild(h);
-      /* partition the steps under their notebook section (## heading)
-         and subsection (### heading) — code grouped like the notebook */
-      var lastSec=null,lastSub=null;
+      /* partition the steps under their notebook section (## heading) and
+         subsection (### heading). Each section is a collapsible + hideable
+         block, mirroring the docs — its steps live in a .vo-sec-body. */
+      var lastSec=null,lastSub=null,secBody=col,secNs=[],secHdr=null;
+      function wireSecEye(){
+        if(!secHdr) return;
+        var nss=secNs.slice();
+        secHdr.querySelector('.vo-sec-eye').addEventListener('click',
+          function(e){
+            e.stopPropagation();
+            var hid=hiddenSet({hidden:spec.list()});
+            var anyVis=nss.some(function(ns){return !hid[ns];});
+            nss.forEach(function(ns){
+              if(anyVis?!hid[ns]:hid[ns]) spec.toggle(ns);});
+            doRebuild();
+          });
+      }
       vis.forEach(function(st,k){
         var sec=st.sectitle||'',sub=st.subsection||'';
         if(sec!==lastSec){
+          wireSecEye();                       /* finish the previous section */
+          secNs=[];secHdr=null;
           if(sec){
             var sd=document.createElement('div');sd.className='vo-sec';
-            sd.textContent=sec;col.appendChild(sd);
+            var chev=document.createElement('span');
+            chev.className='vo-sec-chev';chev.innerHTML='&#9662;';
+            var lab=document.createElement('span');
+            lab.className='vo-sec-lab';lab.textContent=sec;
+            var eye=document.createElement('span');
+            eye.className='vo-sec-eye';eye.innerHTML='&#128065;';
+            eye.title='Hide or show this whole section';
+            sd.appendChild(chev);sd.appendChild(lab);sd.appendChild(eye);
+            col.appendChild(sd);
+            secBody=document.createElement('div');
+            secBody.className='vo-sec-body';col.appendChild(secBody);
+            secHdr=sd;
+            /* capture sd + secBody per-section (both are function-scoped vars
+               reused across steps) so each chevron folds its OWN body */
+            (function(hdr,bdy){
+              var fold=function(){
+                var c=hdr.classList.toggle('collapsed');
+                bdy.classList.toggle('vo-sec-fold',c);};
+              chev.addEventListener('click',function(e){
+                e.stopPropagation();fold();});
+              lab.addEventListener('click',fold);
+            })(sd,secBody);
+          } else {
+            secBody=col;   /* steps with no section go straight in the column */
           }
           lastSec=sec;lastSub=null;
         }
         if(sub!==lastSub){
           if(sub){
             var sbh=document.createElement('div');sbh.className='vo-subsec';
-            sbh.textContent=sub;col.appendChild(sbh);
+            sbh.textContent=sub;secBody.appendChild(sbh);
           }
           lastSub=sub;
         }
-        col.appendChild(traceStep(st,k,g,multi,!!hidden[st.ns],spec,doRebuild));
+        secNs.push(st.ns);
+        secBody.appendChild(
+          traceStep(st,k,g,multi,!!hidden[st.ns],spec,doRebuild));
       });
+      wireSecEye();                            /* finish the final section */
       cols.appendChild(col);
     });
     v.appendChild(cols);
@@ -8459,9 +8720,6 @@ _TEMPLATE = """<!doctype html>
 <div class="scrim" id="scrim"></div>
 <header class="apptop" id="apptop">
   <div class="appbar">
-    <button class="menubtn" id="menubtn" aria-label="Toggle sections"
-      title="Show or hide the section sidebar (table of contents)">
-      <span></span></button>
     <button class="toggle tv" id="tv-plots"
       title="Plots / figures — the headline of each cell. Click to cycle:
  Visible -> Collapsed -> Hidden"></button>
@@ -8497,9 +8755,11 @@ _TEMPLATE = """<!doctype html>
       title="How to use, and everything this tool can do">Help</button>
   </div>
   <div class="tabsrow">
+    <button class="menubtn" id="menubtn" aria-label="Toggle sections"
+      title="Show or hide the section sidebar (table of contents)">
+      <span></span></button>
     <button class="tabrow-open" id="tab-open" hidden
       title="Open a notebook (.ipynb)">&#43; Open</button>
-    <span class="tabs-label">docs</span>
     <div class="tabstrip" id="tabstrip" role="tablist"
       aria-label="Open notebooks"></div>
   </div>
@@ -9234,8 +9494,18 @@ def _self_test() -> None:
     # notebooks-in-presentation chips + advanced code-type filter
     assert 'id="dc-nbs"' in out and "renderPresNbs" in out
     assert 'id="ck-filter-btn"' in out and 'id="ck-filter-menu"' in out
-    # printed-output cells read "print", markdown notes stay "note"
-    assert _BADGE["text"] == "print" and _BADGE["note"] == "note"
+    # printed output (incl. a bare expression) reads "print"; markdown notes
+    # read "markdown" (not "note"); "metric" is gone — a printed value IS print
+    assert _BADGE["text"] == "print" and _BADGE["note"] == "markdown"
+    assert _BADGE["metric"] == "print"
+    assert _infer_kind([RenderedOutput("text", "5", ot="print")]) == "text"
+    # the key groups its dots with dividers (markdown | plots | code | output)
+    _knav = render_nav(parse_notebook({"cells": [
+        {"cell_type": "markdown", "source": "note text"},
+        {"cell_type": "code", "source": "import os", "outputs": []},
+        {"cell_type": "code", "source": "print(1)", "outputs": [
+            {"output_type": "stream", "name": "stdout", "text": "1\n"}]}]}))
+    assert "navkey-div" in _knav and ">markdown<" in _knav and ">note<" not in _knav
     # advanced OUTPUT-type filter + finer repr types (numeric/list/dict/…)
     assert 'id="ot-filter-btn"' in out and 'id="ot-filter-menu"' in out
     assert "function presentOtTypes" in out and ".ot-off{display:none" in out
@@ -9245,10 +9515,35 @@ def _self_test() -> None:
     assert _repr_kind("'hi'") == "string" and _repr_kind("(1, 2)") == "tuple"
     assert _repr_kind("True") == "bool" and _repr_kind("None") == "none"
     assert _repr_kind("np.float64(1.5)") == "array"
+    # empty dict is a dict, not a set; string contents don't fool set/dict
+    assert _repr_kind("{}") == "dict"
+    assert _repr_kind("{'12:00', '13:00'}") == "set"
+    assert _repr_kind("{'a}b': 1}") == "dict"
+    # every numeric-like repr lands under "numeric" (complex, inf, nan, sci)
+    assert _repr_kind("(1+2j)") == "numeric" and _repr_kind("2j") == "numeric"
+    assert _repr_kind("inf") == "numeric" and _repr_kind("-nan") == "numeric"
+    assert _repr_kind("-1.5e-9") == "numeric"
+    # granular value types: function / class / object / module + pandas
+    assert _repr_kind("<function foo at 0x1>") == "function"
+    assert _repr_kind("<class 'int'>") == "class"
+    assert _repr_kind("<module 'os'>") == "module"
+    assert _repr_kind("<Foo object at 0x1>") == "object"
+    assert _repr_kind("0    1\n1    2\ndtype: int64") == "series"
+    assert _repr_kind("   a  b\n0  1  2\n\n[1 rows x 2 columns]") == "dataframe"
+    # a pandas DataFrame HTML table is tagged 'dataframe'
+    _dfo = render_outputs([{"output_type": "execute_result", "data": {
+        "text/html": '<table class="dataframe"><tr><td>1</td></tr></table>'}}])
+    assert _dfo and _dfo[0].ot == "dataframe" and "ot-dataframe" in _dfo[0].payload
+    # the Output-types menu must actually surface the finer slugs (not filter
+    # them out against a stale allow-list)
+    assert "var OT_TYPES=['print','numeric'" in out
+    assert "if(OT_TYPES.indexOf(t)<0) out.push(t)" in out
+    # opening a collapsed output must not re-show type-filtered children
+    assert ".cb-out.part-fold.part-open>*:not(.ot-off){display:revert" in out
     _rout = render_outputs([
         {"output_type": "execute_result", "data": {"text/plain": "[1, 2, 3]"}}])
     assert _rout and _rout[0].ot == "list" and "ot-list" in _rout[0].payload
-    assert ".ckf-dot.ot-sw-numeric" in out and ".ckf-dot.ot-sw-dict" in out
+    assert ".ckf-dot.ot-sw-numeric" in out and ".ckf-dot.ot-sw-dataframe" in out
     # the sidebar key sits at the TOP (before the first section row)
     _nav = render_nav(doc)
     assert "navkey" in _nav and _nav.index("navkey") < _nav.index("navsec-row")
@@ -9430,6 +9725,19 @@ def _self_test() -> None:
     assert 'id="fmt-list"' in out and 'id="fmt-shape"' in out
     assert 'id="fmt-dup"' in out and 'id="fmt-front"' in out
     assert 'id="pickbar"' in out and 'id="fmt-replace"' in out
+    # top-left declutter: no "docs" label; the hamburger moved onto the tab
+    # line (between the tabsrow and the tabstrip)
+    assert 'class="tabs-label"' not in out
+    assert (out.index('class="tabsrow"') < out.index('id="menubtn"')
+            < out.index('id="tabstrip"'))
+    assert ".tabsrow .menubtn" in out
+    # slide-editor declutter: an unselected edit frame is transparent + borderless
+    # and its chrome (border/title/Replace/parts) returns only when selected
+    assert (".deck.editing .an-cell{cursor:move;background:none;"
+            "border-color:transparent" in out)
+    assert ".deck.editing .an-cell .an-cellhead{display:none" in out
+    assert ".deck.editing .an-cell.sel .an-cellbtn{display:block" in out
+    assert ".deck.editing .an-cell.sel .cellparts" in out
     pres_f = _as_presentations([{"name": "a", "folder": "paper 1",
                                  "slides": []}])
     assert pres_f[0]["folder"] == "paper 1"
@@ -9459,6 +9767,36 @@ def _self_test() -> None:
     assert "function wireCardBehaviors" in out and "APP.wireCardBehaviors" in out
     # a trace tab renders as a SUB-tab nested under its source notebook tab
     assert "tab-sub" in out and "function makeTab" in out
+    # a markdown note that NAMES a variable is linked into that variable's
+    # plot trace: it rides along as a trace CARD (up.kind==='note') but is
+    # excluded from the dependency graph (s.kind!=='note', avoids note<->definer
+    # cycles) and never leaks a code trail into the presentation (note frames)
+    assert "up.kind==='note'" in out
+    assert "s.kind!=='note'" in out
+    assert "f.it.kind==='note') return" in out
+    _lnb = parse_notebook({"cells": [
+        {"cell_type": "code", "source": "ridge_index = 1", "outputs": []},
+        {"cell_type": "markdown", "source": "The `ridge_index` and z500 matter."},
+        {"cell_type": "code", "source": "z500 = 2", "outputs": []},
+        {"cell_type": "code", "source": "fig = ridge_index + z500", "outputs": [
+            {"output_type": "display_data",
+             "data": {"image/png": "iVBORw0KGgo="}}]}]})
+    _lnote = [it for s in _lnb.sections for it in s.items if it.is_note][0]
+    _lfig = [it for s in _lnb.sections for it in s.items
+             if it.kind in ("figure", "diagnostic")][0]
+    assert (_lnote.anchor or _lnote.item_id) in _lfig.chain   # note rides along
+    assert _lnote.chain                                       # note -> its vars
+    # a plain-word variable named in prose (no backticks) must NOT over-link
+    _pnb = parse_notebook({"cells": [
+        {"cell_type": "code", "source": "warm = 1", "outputs": []},
+        {"cell_type": "markdown", "source": "We study warm events in summer."},
+        {"cell_type": "code", "source": "fig = warm + 1", "outputs": [
+            {"output_type": "display_data",
+             "data": {"image/png": "iVBORw0KGgo="}}]}]})
+    _pnote = [it for s in _pnb.sections for it in s.items if it.is_note][0]
+    _pfig = [it for s in _pnb.sections for it in s.items
+             if it.kind in ("figure", "diagnostic")][0]
+    assert (_pnote.anchor or _pnote.item_id) not in _pfig.chain
     # the retired focus-mode machinery is gone
     assert "focusStem" not in out and 'id="focusbar"' not in out
     # toolbar: content filters, a grouping divider, Open moved to the tab line
@@ -9477,6 +9815,12 @@ def _self_test() -> None:
     # the presentation code-trail has its OWN Code-types / Output-types filters
     assert "function traceFilterDropdown" in out and ".vo-step.vo-filtered" in out
     assert "var traceCkHidden" in out and "function applyTraceFilter" in out
+    # presentation trail sections collapse + hide (chevron + eye), like the docs
+    assert ".vo-sec-chev" in out and ".vo-sec-eye" in out
+    assert ".vo-sec-body.vo-sec-fold{display:none" in out
+    # the trail toolbar clears the ↑ arrow, and its buttons match the docs
+    assert "padding:64px 0 60px" in out
+    assert ".vo-xall,.vo-fbtn{font-family:var(--mono);font-size:11px" in out
     # guided tour (skippable, shown once) + entry points
     assert 'id="tour"' in out and "var TOUR_STEPS" in out
     assert 'id="welcome-tour"' in out and 'id="help-tour"' in out
