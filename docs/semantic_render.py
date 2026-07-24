@@ -770,14 +770,18 @@ def parse_notebook(nb: dict, title: str | None = None) -> Document:
             sem_meta.get("presentations") or sem_meta.get("deck"))
     cur_section: Section | None = None
     cur_subsection = ""
+    # the synthetic bucket holding content that appears before any heading; a
+    # real heading of the same name may later claim it instead of duplicating
+    auto_overview: Section | None = None
     group_index: dict[str, Item] = {}
     cell_by_id: dict[str, dict] = {}   # id -> member cell (for `stack:` lookup)
     all_members: list[dict] = []       # every code cell, to find stacked ids
 
     def ensure_section() -> Section:
-        nonlocal cur_section
+        nonlocal cur_section, auto_overview
         if cur_section is None:
             cur_section = Section("Overview", _slug("overview", used_slugs))
+            auto_overview = cur_section
             doc.sections.append(cur_section)
         return cur_section
 
@@ -793,20 +797,25 @@ def parse_notebook(nb: dict, title: str | None = None) -> Document:
             if m:
                 level, text = len(m.group(1)), m.group(2).strip()
                 if level <= 2:
-                    # h1 and h2 both become sections (h1 = top level). The
-                    # first h1 also names the document; later ones are
-                    # sections only, so no heading is silently dropped.
+                    # Every heading opens its own section, in document order.
+                    # Markdown headings are POSITIONAL: two headings that share
+                    # a title (e.g. a `## Summary` under each model) are two
+                    # distinct sections, unlike the declarative `#| section:`
+                    # directive which groups by name. The first h1 also names
+                    # the document.
                     if level == 1 and not title_locked:
                         doc.title = text
                         title_locked = True
-                    existing = next(
-                        (s for s in doc.sections if s.title == text), None)
-                    if existing is None:
+                    if auto_overview is not None and auto_overview.title == text:
+                        # a real heading claims the synthetic pre-heading
+                        # "Overview" bucket rather than spawning a twin
+                        cur_section = auto_overview
+                        cur_section.level = level
+                        auto_overview = None
+                    else:
                         cur_section = Section(text, _slug(text, used_slugs))
                         cur_section.level = level
                         doc.sections.append(cur_section)
-                    else:
-                        cur_section = existing   # reuse; don't duplicate
                     cur_subsection = ""
                     handled_heading = True
                 else:  # level >= 3 -> subsection marker
@@ -1226,15 +1235,17 @@ def render_item(item: Item) -> str:
     badge = _BADGE.get(item.kind, item.kind)
     kclass = _kind_class(item.kind)
     ck_attr = ""
-    # a strong code type (imports/function/data/plotting/…) labels the cell
-    # even when it produced some incidental output — but a figure wins.
-    # Mixed cells list a few of the kinds they contain.
-    if (item.kind not in ("figure", "diagnostic")
-            and item.code_kinds != ["code"]):
-        badge = " · ".join(item.code_kinds[:3])
-        kclass += f" ckmain-{item.code_kind}"
-        kclass += "".join(f" ck-{c}" for c in item.code_kinds)
+    # EVERY code-bearing cell (anything the Code filter governs — not a figure,
+    # not a markdown note) carries data-ck so the advanced type filter can
+    # reach it, INCLUDING plain "code". Unchecking every type then equals
+    # Hide code. A strong type (imports/function/data/plotting/…) also labels
+    # the cell and recolours its badge; plain "code" keeps the default look.
+    if item.kind not in ("figure", "diagnostic") and not item.is_note:
         ck_attr = f' data-ck="{" ".join(item.code_kinds)}"'
+        if item.code_kinds != ["code"]:
+            badge = " · ".join(item.code_kinds[:3])
+            kclass += f" ckmain-{item.code_kind}"
+            kclass += "".join(f" ck-{c}" for c in item.code_kinds)
     # mixed outputs (e.g. a printed dataset THEN a plot): the figure is
     # the face; everything else folds into an "also printed" disclosure
     imgs = [o for o in item.outputs if o.has_image]
@@ -1305,6 +1316,15 @@ def render_item(item: Item) -> str:
     if item.node_id:
         id_tag = f'<span class="nodeid">{html.escape(item.node_id)}</span>'
 
+    # figures get a "Plot trace" button -> popup with the code lineage + graph
+    trace_btn = ""
+    if item.kind in ("figure", "diagnostic"):
+        trace_btn = (
+            f'<button class="plot-trace-btn" type="button" '
+            f'data-trace="{html.escape(item.anchor or item.item_id)}" '
+            f'title="See every cell that builds this plot — as a code trace '
+            f'and a dependency graph">&#9903; Plot trace</button>')
+
     body = out_html
     htmlsrc = ""
     if item.is_note:
@@ -1330,7 +1350,11 @@ def render_item(item: Item) -> str:
         f'<span class="badge">{badge}</span>'
         f'<h3 class="cardtitle{" echo" if item.title_echo else ""}">'
         f'{html.escape(item.title)}</h3>'
-        f'{id_tag}</header>'
+        f'{id_tag}{trace_btn}'
+        f'<button class="cell-eye" type="button" '
+        f'title="Hide this cell (it stays in the sidebar so you can bring '
+        f'it back)" aria-label="Hide this cell">&#128065;</button>'
+        f'</header>'
         f'<div class="cardbody">{body}</div>'
         f'{htmlsrc}{caption}{prov}{code_block}</article>')
 
@@ -1363,7 +1387,10 @@ def render_nav(doc: Document) -> str:
                 f'<a class="navitem {dot}" href="#card-{it.item_id}" '
                 f'data-item="{it.item_id}">'
                 f'<span class="dot"></span>'
-                f'<span class="navitem-t">{html.escape(it.title)}</span></a>')
+                f'<span class="navitem-t">{html.escape(it.title)}</span>'
+                f'<span class="navitem-eye" role="button" tabindex="0" '
+                f'title="Hide or show this cell" '
+                f'aria-label="Hide or show this cell">&#128065;</span></a>')
         parts.append('</div>')
     # key: one entry per item kind (incl. code subtypes) that occurs here
     labels = {"k-figure": "figure", "k-dataset": "dataset",
@@ -1618,7 +1645,20 @@ body{margin:0;font-family:var(--sans);color:var(--ink);
   font-size:12.5px;transition:color .15s,background .15s;}
 .navitem:hover{color:var(--chrome-ink);background:#ffffff08;}
 .navitem.active{color:#eef4f8;}
-.navitem-t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.navitem-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;}
+/* per-cell eye in the sidebar: click to hide/show a single cell. A cell
+   hidden this way STAYS in the sidebar (dimmed, slashed eye) to restore. */
+.navitem-eye{flex:none;font-size:11px;line-height:1;padding:1px 4px;
+  border-radius:4px;position:relative;opacity:0;color:inherit;
+  transition:opacity .12s,background .12s;}
+.navitem:hover .navitem-eye,.navitem-eye:focus{opacity:.6;}
+.navitem-eye:hover{opacity:1;background:#ffffff14;}
+.navitem.cell-off{opacity:.5;}
+.navitem.cell-off .navitem-eye{opacity:.9;}
+.navitem.cell-off .navitem-eye::after{content:"";position:absolute;
+  left:3px;right:3px;top:calc(50% - 1px);height:1.5px;background:currentColor;
+  transform:rotate(-18deg);border-radius:2px;}
 .navitem .dot{width:6px;height:6px;border-radius:2px;flex:none;
   background:var(--chrome-ink-2);}
 .navitem.k-figure .dot,.nk.k-figure .dot{background:var(--cyan);}
@@ -1726,8 +1766,10 @@ body:not(.light) .docbar-p{color:#8ba0b2;}
   border-color:var(--ink);}
 .tb-sep{width:1px;height:22px;background:var(--line);margin:0 4px;
   flex:none;}
-/* per-type Show/Hide buttons: cyan dot = shown, dim dot = hidden */
+/* per-type state buttons: label shows the CURRENT state. Code cycles
+   Visible (cyan dot) -> Collapsed (amber, half) -> Hidden (dim). */
 .toggle.tv .tdot{opacity:1;background:var(--cyan);}
+.toggle.tv.half .tdot{background:var(--amber);}
 .toggle.tv.off .tdot{opacity:.3;background:currentColor;}
 .toggle.tv.off{color:var(--ink-3);}
 
@@ -1766,6 +1808,15 @@ body:not(.light) .docbar-p{color:#8ba0b2;}
 
 .cardhead{display:flex;align-items:center;gap:10px;margin-bottom:12px;
   padding-left:6px;}
+/* per-cell eye on the card header: hide this one cell (restore via sidebar) */
+.cell-eye{margin-left:auto;flex:none;background:none;border:none;
+  color:var(--ink-3);cursor:pointer;font-size:13px;line-height:1;
+  padding:2px 6px;border-radius:5px;opacity:0;
+  transition:opacity .15s,background .15s;}
+.card:hover .cell-eye,.cell-eye:focus-visible{opacity:.55;}
+.cell-eye:hover{opacity:1;background:var(--paper-2);}
+/* code fully hidden: the code tucked under figures disappears too */
+.codewrap.code-off{display:none;}
 .badge{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;
   text-transform:uppercase;padding:3px 8px;border-radius:4px;
   background:var(--paper-2);color:var(--ink-3);flex:none;}
@@ -1996,16 +2047,19 @@ re-reads it after you re-run it in Jupyter, <b>&#10005;</b> closes.</li>
 
 <h3>Reading a notebook</h3>
 <ul>
-<li><b>Hide figures / markup / code</b> (top bar) filter every tab at
-once, removing those cards from the page and the sidebar; <i>Show
-code</i> unfolds ALL code, including the code tucked under each
-figure.</li>
+<li>The <b>Figures</b> / <b>Markup</b> / <b>Code</b> buttons (top bar)
+show the CURRENT state and cycle when clicked. Code has three states:
+<i>Visible</i> (code expanded), <i>Collapsed</i> (code folded away but
+the cards stay), and <i>Hidden</i> (code cards removed from the page and
+the sidebar). They apply to every tab at once.</li>
 <li><b>Raw notebook</b> flips the current tab to the notebook exactly
 as authored &mdash; cells in order, directives visible &mdash; so you
 can always see where a title or caption came from.</li>
-<li>The left sidebar navigates sections; the <b>analysis graph</b> at
-its foot jumps to any node. <i>derives from</i> chips under a card jump
-to its inputs.</li>
+<li>The left sidebar navigates sections (each collapses via its
+chevron); the <b>analysis graph</b> at its foot jumps to any node.
+The <b>eye</b> beside any cell &mdash; in the sidebar or on the card
+itself &mdash; hides just that cell; a cell hidden this way stays in the
+sidebar (dimmed) so its eye can bring it back.</li>
 <li><b>Show code</b> under a figure tells the whole story: every
 upstream cell (load &rarr; transform &rarr; plot) in execution order,
 traced automatically from the code's variables.</li>
@@ -2778,46 +2832,76 @@ _JS = r"""
   });
 
   /* ---- global show/hide filters (top bar; apply to every tab) ---- */
-  var vis={figs:true,markup:true,code:true};
+  /* figures/markup are 2-state; code cycles through 3 (the button LABEL
+     shows the current state, not the action it performs) */
+  var vis={figs:true,markup:true};
+  var codeState='collapsed';   /* 'visible' | 'collapsed' | 'hidden' */
+  var CODE_CYCLE=['visible','collapsed','hidden'];
+  var CODE_LABEL={visible:'Visible',collapsed:'Collapsed',hidden:'Hidden'};
   var ckHidden={};   /* advanced: code subtypes the user has hidden */
   var CK_TYPES=['imports','function','data','settings',
-    'plotting','print','constant'];
-  var TYPES=[['figs','figures'],['markup','markup'],['code','code']];
+    'plotting','print','constant','code'];
   function renderTypeButtons(){
-    TYPES.forEach(function(p){
-      var b=$('#tv-'+p[0]); if(!b) return;
-      b.innerHTML='<span class="tdot"></span>'
-        +(vis[p[0]]?'Hide ':'Show ')+p[1];
-      b.classList.toggle('off',!vis[p[0]]);
-    });
+    var fb=$('#tv-figs');
+    if(fb){
+      fb.innerHTML='<span class="tdot"></span>Figures: '
+        +(vis.figs?'Visible':'Hidden');
+      fb.classList.toggle('off',!vis.figs);
+    }
+    var mb=$('#tv-markup');
+    if(mb){
+      mb.innerHTML='<span class="tdot"></span>Markup: '
+        +(vis.markup?'Visible':'Hidden');
+      mb.classList.toggle('off',!vis.markup);
+    }
+    var cb=$('#tv-code');
+    if(cb){
+      cb.innerHTML='<span class="tdot"></span>Code: '+CODE_LABEL[codeState];
+      cb.classList.toggle('off',codeState==='hidden');
+      cb.classList.toggle('half',codeState==='collapsed');
+      cb.setAttribute('data-cs',codeState);
+    }
   }
   function applyFilters(){
     $$('.nbshell').forEach(function(sh){
       $$('.card',sh).forEach(function(c){
         var kind=c.dataset.kind,note=c.dataset.note==='1';
-        var show=note?vis.markup
-          :(kind==='figure'||kind==='diagnostic')?vis.figs:vis.code;
+        /* passes the global TYPE filter (figs/markup/code=hidden) */
+        var passes=note?vis.markup
+          :(kind==='figure'||kind==='diagnostic')?vis.figs
+          :(codeState!=='hidden');
         /* advanced: hide a code cell whose primary type is filtered out */
-        if(show&&!note&&kind!=='figure'&&kind!=='diagnostic'&&c.dataset.ck){
-          if(ckHidden[c.dataset.ck.split(' ')[0]]) show=false;
+        if(passes&&!note&&kind!=='figure'&&kind!=='diagnostic'&&c.dataset.ck){
+          if(ckHidden[c.dataset.ck.split(' ')[0]]) passes=false;
         }
-        /* a hidden card is fully removed from the doc + the sidebar */
-        c.classList.toggle('is-hidden',!show);
+        /* a per-cell eye can hide one cell regardless of the global filter */
+        var off=c.classList.contains('cell-off');
+        c.classList.toggle('is-hidden',!(passes&&!off));
         var id=c.id.replace(/^card-/,'');
         var nav=sh.querySelector('.navitem[data-item="'+id+'"]');
-        if(nav) nav.classList.toggle('nav-hidden',!show);
+        if(nav){
+          /* filtered out -> gone from the sidebar; manually hidden -> STAYS
+             (dimmed, so you can bring it back) */
+          nav.classList.toggle('nav-hidden',!passes);
+          nav.classList.toggle('cell-off',off);
+        }
       });
-      /* a section whose cards are ALL hidden folds away too (doc + nav) */
       $$('.section',sh).forEach(function(sec){
         var cards=$$('.card',sec);
-        var gone=cards.length>0&&cards.every(function(c){
+        /* doc: an empty section header (all its cards hidden) folds away */
+        var allGone=cards.length>0&&cards.every(function(c){
           return c.classList.contains('is-hidden');});
-        sec.classList.toggle('is-hidden',gone);
+        sec.classList.toggle('is-hidden',allGone);
         var sid=sec.dataset.sec;
         var row=sh.querySelector('.navsec-row[data-sec="'+sid+'"]');
         var items=sh.querySelector('.navitems[data-sec="'+sid+'"]');
-        if(row) row.classList.toggle('nav-hidden',gone);
-        if(items) items.classList.toggle('nav-hidden',gone);
+        /* nav: the section vanishes only if EVERY item is filtered out —
+           manually-hidden cells keep their (dimmed) rows so you can restore */
+        var navs=items?$$('.navitem',items):[];
+        var navGone=navs.length>0&&navs.every(function(n){
+          return n.classList.contains('nav-hidden');});
+        if(row) row.classList.toggle('nav-hidden',navGone);
+        if(items) items.classList.toggle('nav-hidden',navGone);
       });
     });
     renderTypeButtons();
@@ -2872,23 +2956,38 @@ _JS = r"""
     if(ckMenu&&!ckMenu.hidden&&!ckMenu.contains(e.target)
        &&e.target!==ckBtn) ckMenu.hidden=true;
   });
-  /* "Show code" means ALL code: code cards AND the blocks folded under
-     every figure / dataset card */
-  var codeAllOpen=null;   /* null until the user toggles */
+  /* the code state drives every code block: code cards AND the blocks
+     folded under every figure / dataset card. Visible = expanded,
+     Collapsed = folded, Hidden = the block disappears entirely. */
   function setAllCode(open,root){
     $$('.codewrap',root||document).forEach(function(w){
+      /* a "bare" code cell (no output) has NO toggle button — its source IS
+         the card body, so it must stay open or the card becomes an empty,
+         unexpandable husk. Never fold bare code. */
+      if(w.classList.contains('bare')){w.setAttribute('data-open','');return;}
       if(open) w.setAttribute('data-open','');
       else w.removeAttribute('data-open');
       var btn=$('.codetoggle',w);
       if(btn) btn.setAttribute('aria-expanded',open?'true':'false');
     });
   }
-  TYPES.forEach(function(p){
-    var b=$('#tv-'+p[0]);
-    if(b) b.addEventListener('click',function(){
-      vis[p[0]]=!vis[p[0]];applyFilters();
-      if(p[0]==='code'){codeAllOpen=vis.code;setAllCode(vis.code);}
+  function applyCodeState(root){
+    var open=codeState==='visible',hide=codeState==='hidden';
+    $$('.codewrap',root||document).forEach(function(w){
+      w.classList.toggle('code-off',hide);
     });
+    setAllCode(open,root);
+  }
+  var fb=$('#tv-figs');
+  if(fb) fb.addEventListener('click',function(){
+    vis.figs=!vis.figs;applyFilters();});
+  var mb=$('#tv-markup');
+  if(mb) mb.addEventListener('click',function(){
+    vis.markup=!vis.markup;applyFilters();});
+  var cb=$('#tv-code');
+  if(cb) cb.addEventListener('click',function(){
+    codeState=CODE_CYCLE[(CODE_CYCLE.indexOf(codeState)+1)%CODE_CYCLE.length];
+    applyFilters();applyCodeState();
   });
   renderTypeButtons();
 
@@ -3277,6 +3376,41 @@ _JS = r"""
         chev.setAttribute('aria-expanded',(!col).toString());
       });
     });
+    /* ---- per-cell eye: hide/show one cell (it stays in the sidebar) ---- */
+    function setCellOff(id,off){
+      var card=shell.querySelector('.card[id="card-'+id+'"]');
+      var nav=shell.querySelector('.navitem[data-item="'+id+'"]');
+      if(card) card.classList.toggle('cell-off',off);
+      if(nav) nav.classList.toggle('cell-off',off);
+      applyFilters();
+    }
+    $$('.cell-eye',shell).forEach(function(btn){
+      btn.addEventListener('click',function(e){
+        e.preventDefault();e.stopPropagation();
+        var card=btn.closest('.card'); if(!card) return;
+        setCellOff(card.id.replace(/^card-/,''),true);   /* hide this cell */
+      });
+    });
+    $$('.navitem-eye',shell).forEach(function(sp){
+      var toggle=function(e){
+        e.preventDefault();e.stopPropagation();
+        var nav=sp.closest('.navitem'); if(!nav) return;
+        setCellOff(nav.dataset.item,!nav.classList.contains('cell-off'));
+      };
+      sp.addEventListener('click',toggle);
+      /* role=button span: Enter/Space must act (keyboard users restore a
+         cell hidden via the card eye only through this control) */
+      sp.addEventListener('keydown',function(e){
+        if(e.key==='Enter'||e.key===' '||e.key==='Spacebar') toggle(e);
+      });
+    });
+    /* ---- figure "Plot trace" button -> the deck's trace popup ---- */
+    $$('.plot-trace-btn',shell).forEach(function(btn){
+      btn.addEventListener('click',function(e){
+        e.preventDefault();e.stopPropagation();
+        if(window.SemTrace) window.SemTrace.open(stem,btn.dataset.trace);
+      });
+    });
 
     /* ---- register ---- */
     var replaced=!!APP.shells[stem];
@@ -3284,7 +3418,7 @@ _JS = r"""
       title:data.title||stem};
     if(APP.order.indexOf(stem)<0) APP.order.push(stem);
     applyFilters();
-    if(codeAllOpen!==null) setAllCode(codeAllOpen,shell);
+    applyCodeState(shell);   /* fold/hide code to match the current state */
     document.dispatchEvent(new CustomEvent('sem:shell',
       {detail:{stem:stem,el:shell,data:data,replaced:replaced}}));
     renderTabs();
@@ -3710,6 +3844,13 @@ _DECK_HTML = """
             <button class="dc-mi" id="mi-del">Delete presentation</button>
           </div>
         </div>
+        <div class="dc-menuwrap">
+          <button class="dbtn" id="dc-nbs-btn" aria-haspopup="true"
+            aria-expanded="false"
+            title="Notebooks that went into this presentation">&#128218;
+            Notebooks</button>
+          <div class="dc-menu dc-nbs-menu" id="dc-nbs-menu" hidden></div>
+        </div>
         <button class="dbtn" id="dc-save">Save</button>
         <span class="dc-spring"></span>
         <span class="deck-status" id="deck-status"></span>
@@ -3874,6 +4015,19 @@ _DECK_HTML = """
     <div class="vfull-body" id="vfull-body"></div>
   </div>
   <div class="deck-toast" id="deck-toast" hidden></div>
+</div>
+<div class="tracepop" id="tracepop" hidden>
+  <div class="tracepop-scrim" id="tracepop-scrim"></div>
+  <div class="tracepop-box">
+    <div class="tracepop-head">
+      <span class="tracepop-eyebrow">plot trace</span>
+      <span class="tracepop-t" id="tracepop-t"></span>
+      <span class="dc-spring"></span>
+      <button class="dbtn" id="tracepop-close"
+        title="Close (Esc)">&#10005;</button>
+    </div>
+    <div class="tracepop-body" id="tracepop-body"></div>
+  </div>
 </div>
 <div class="pickbar" id="pickbar" hidden>
   <span>&#128204; Click a card in the notebook to place it in the
@@ -4064,6 +4218,54 @@ body.deck-open{overflow:hidden;}
   white-space:nowrap;}
 .vfull-body{flex:1;min-height:0;overflow:auto;}
 
+/* ---- docs "view plot trace" popup (a DARK panel so the trace looks
+   exactly like it does in the presentation — one consistent component) ---- */
+.plot-trace-btn{flex:none;font-family:var(--mono);font-size:10.5px;
+  letter-spacing:.02em;border:1px solid var(--line);background:var(--paper-2);
+  color:var(--ink-2);border-radius:20px;padding:3px 10px;cursor:pointer;
+  transition:background .15s,color .15s,border-color .15s;white-space:nowrap;}
+.plot-trace-btn:hover{background:#39a9c016;color:var(--cyan-deep);
+  border-color:#39a9c055;}
+body:not(.light) .plot-trace-btn{background:#0e1824;color:#8ba0b2;
+  border-color:#ffffff1f;}
+body:not(.light) .plot-trace-btn:hover{color:#5fc3d8;border-color:#39a9c066;}
+.tracepop{position:fixed;inset:0;z-index:180;display:flex;
+  align-items:center;justify-content:center;padding:34px;}
+.tracepop[hidden]{display:none;}
+.tracepop-scrim{position:absolute;inset:0;background:#04080ccc;
+  backdrop-filter:blur(2px);}
+.tracepop-box{position:relative;z-index:1;width:min(940px,96vw);
+  max-height:92vh;display:flex;flex-direction:column;
+  background:#0b141d;border:1px solid #ffffff1f;border-radius:14px;
+  box-shadow:0 24px 80px #000a;overflow:hidden;}
+.tracepop-head{display:flex;align-items:center;gap:10px;flex:none;
+  padding:14px 16px;border-bottom:1px solid #ffffff14;}
+.tracepop-eyebrow{font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;
+  text-transform:uppercase;color:#5fc3d8;flex:none;}
+.tracepop-t{font-size:15px;font-weight:600;color:#eef4f8;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.tracepop-body{flex:1;min-height:0;overflow:auto;padding:16px 18px 22px;}
+.tracepop-body .vtrace{max-height:none;}
+/* the per-step full-screen button uses an overlay inside the hidden deck;
+   in the popup steps expand inline, so it is redundant */
+.tracepop-body .vo-full{display:none;}
+.tracepop-none{color:#8ba0b2;font-size:14px;text-align:center;padding:30px;}
+/* per-plot dependency graph */
+.plotgraph-wrap{margin:0 0 18px;padding:12px 12px 6px;
+  background:#0e1824;border:1px solid #ffffff12;border-radius:10px;}
+.pg-eyebrow{font-family:var(--mono);font-size:9.5px;letter-spacing:.18em;
+  text-transform:uppercase;color:#63758a;margin-bottom:8px;}
+.plotgraph{display:block;width:100%;height:auto;}
+.pg-edge{fill:none;stroke:#f0a848;stroke-width:1.6;opacity:.6;}
+.pg-node{cursor:pointer;}
+.pg-node rect{stroke:#ffffff26;stroke-width:1;
+  transition:filter .15s;}
+.pg-node:hover rect,.pg-node:focus rect{filter:brightness(1.18);
+  stroke:#ffffff66;}
+.pg-node:focus{outline:none;}
+.pg-node text{font-family:var(--sans);font-size:12px;fill:#0b141d;
+  font-weight:600;pointer-events:none;}
+
 .slide{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;
   animation:slidein .28s ease;}
 @keyframes slidein{from{opacity:0;transform:translateY(8px);}
@@ -4228,6 +4430,28 @@ body.creating-docs .card:hover{outline:2px solid var(--cyan);
   padding:2px 9px;}
 .dc-nb.missing{color:#c9a06a;background:#cf9a4e18;
   border-color:#cf9a4e40;}
+/* the "Notebooks" header popover: list + open-all / refresh-all */
+.dc-nbs-menu{min-width:252px;max-width:330px;gap:1px;}
+.dc-nbs-menuh{font-family:var(--mono);font-size:8.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:#7e93a4;padding:6px 9px 5px;}
+.dc-nbs-empty{font-size:11.5px;color:#8ba0b2;padding:8px 10px;line-height:1.5;}
+.dc-nbrow{display:flex;align-items:center;gap:8px;padding:6px 9px;
+  border-radius:5px;font-size:12px;color:#dce6ee;}
+.dc-nbrow.clickable{cursor:pointer;}
+.dc-nbrow.clickable:hover{background:#39a9c020;}
+.dc-nbrow-dot{width:7px;height:7px;border-radius:50%;flex:none;
+  background:#5b7589;}
+.dc-nbrow.open .dc-nbrow-dot{background:#46c08a;}
+.dc-nbrow.avail .dc-nbrow-dot{background:#f0a848;}
+.dc-nbrow.gone .dc-nbrow-dot{background:#8a5a5a;}
+.dc-nbrow-nm{flex:1;font-family:var(--mono);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;}
+.dc-nbrow.gone .dc-nbrow-nm{color:#98a7b5;}
+.dc-nbrow-st{font-family:var(--mono);font-size:9.5px;color:#7e93a4;flex:none;}
+.dc-nbacts{display:flex;gap:6px;padding:8px 6px 3px;margin-top:4px;
+  border-top:1px solid #ffffff14;}
+.dc-nbacts .dbtn{flex:1;text-align:center;justify-content:center;
+  font-size:11.5px;}
 #pres-name{width:100%;background:#16273a;border:1px solid #ffffff22;
   color:#dce6ee;font-family:var(--sans);font-size:12.5px;padding:7px 9px;
   border-radius:6px;box-sizing:border-box;}
@@ -4966,7 +5190,6 @@ _DECK_JS = r"""
      transforms -> plot), deduped, in execution order — one cell per
      screen below the slide. */
   var vGroups=[];
-  var traceShowHidden=false;   /* transient: reveal steps marked hidden */
   var TRACE_COLORS=['#39a9c0','#ff6b57','#f0a848','#46a892',
     '#c98fd0','#5b8dd6'];
   function hiddenSet(s){
@@ -4979,10 +5202,189 @@ _DECK_JS = r"""
     if(i>=0) s.hidden.splice(i,1); else s.hidden.push(ns);
     markDirty();
   }
-  function rebuildTrace(){
-    var old=stage.querySelector('.vtrace'); if(!old) return;
-    old.parentNode.replaceChild(buildTrace(pres.slides[cur]),old);
+  /* ---- reusable code trace (shared by the presentation AND the docs
+     "view plot trace" popup, so they always look + behave identically) ----
+     spec = { groups:[{it,steps,color}], list:()=>[ns hidden],
+              toggle:(ns)=>void (persist), showHiddenRef:{v:bool} } */
+  function renderTrace(spec){
+    spec.showHiddenRef=spec.showHiddenRef||{v:false};
+    function rebuild(oldNode){
+      var fresh=traceNode(spec,rebuild);
+      if(oldNode&&oldNode.parentNode)
+        oldNode.parentNode.replaceChild(fresh,oldNode);
+      return fresh;
+    }
+    return rebuild(null);
   }
+  /* the presentation wrapper: groups come from the slide's framed plots */
+  function buildTrace(s){
+    return renderTrace({
+      groups:vGroups,
+      list:function(){return (s&&s.hidden)||[];},
+      toggle:function(ns){toggleHidden(s,ns);}
+    });
+  }
+  /* one lineage group for a SINGLE plot/item (the docs popup) */
+  function lineageForItem(ns){
+    var it=ITEMS[ns]; if(!it) return null;
+    var steps=[],seen={};
+    (it.chain||[]).forEach(function(anchor){
+      var up=ITEMS[nsKey(it.nb,anchor)];
+      if(up&&up.hasCode&&!seen[up.ns]){seen[up.ns]=1;steps.push(up);}
+    });
+    if(it.hasCode&&!seen[it.ns]) steps.push(it);
+    return {it:it,steps:steps,color:TRACE_COLORS[0]};
+  }
+  /* ---- per-plot dependency graph (the docs popup) ---- */
+  var NODE_FILL={figure:'#39a9c0',diagnostic:'#39a9c0',dataset:'#4d90c0',
+    transform:'#5b7589',metric:'#46a892',note:'#cf9a4e',text:'#8ba0b2',
+    imports:'#a3855c','function':'#46a892',data:'#4d90c0',constant:'#9a7cc0',
+    settings:'#5b7589',plotting:'#39a9c0',print:'#cf9a4e',code:'#8ba0b2'};
+  function nodeColor(st){
+    if(st.kind==='figure'||st.kind==='diagnostic') return NODE_FILL.figure;
+    var cks=st.codeKinds||[st.codeKind||'code'];
+    return NODE_FILL[cks[0]]||NODE_FILL[st.kind]||'#8ba0b2';
+  }
+  var SVGNS='http://www.w3.org/2000/svg';
+  function plotGraph(group,onNode){
+    if(!group||group.steps.length<2) return null;   /* nothing to draw */
+    var steps=group.steps,n=steps.length,idx={},i;
+    for(i=0;i<n;i++) idx[steps[i].ns]=i;
+    /* each step's ancestors that are also in this plot's set (from chain) */
+    var anc=steps.map(function(s){
+      var set={};
+      (s.chain||[]).forEach(function(a){
+        var ns=nsKey(s.nb,a); if(idx[ns]!==undefined) set[ns]=1;});
+      return set;
+    });
+    /* direct parents = transitive reduction (drop ancestors reachable
+       through another ancestor) */
+    var parents=steps.map(function(s,i2){
+      var a=Object.keys(anc[i2]);
+      return a.filter(function(p){
+        return !a.some(function(q){
+          return q!==p&&anc[idx[q]]&&anc[idx[q]][p];});
+      });
+    });
+    var depth=[]; for(i=0;i<n;i++) depth.push(-1);
+    function dep(i2){
+      if(depth[i2]>=0) return depth[i2];
+      depth[i2]=0;   /* cycle guard */
+      var m=0; parents[i2].forEach(function(p){
+        m=Math.max(m,dep(idx[p])+1);});
+      depth[i2]=m; return m;
+    }
+    for(i=0;i<n;i++) dep(i);
+    var maxD=0; depth.forEach(function(v){if(v>maxD)maxD=v;});
+    var layers=[],L; for(L=0;L<=maxD;L++) layers.push([]);
+    for(i=0;i<n;i++) layers[depth[i]].push(i);
+    var NW=152,NH=30,GX=20,GY=52,PADX=14,PADY=14,maxCols=0;
+    layers.forEach(function(l){if(l.length>maxCols)maxCols=l.length;});
+    var W=PADX*2+maxCols*NW+(maxCols-1)*GX;
+    var H=PADY*2+(maxD+1)*NH+maxD*GY,pos={};
+    layers.forEach(function(l,Ld){
+      var rowW=l.length*NW+(l.length-1)*GX,x0=(W-rowW)/2;
+      l.forEach(function(i2,k){
+        pos[i2]={x:x0+k*(NW+GX),y:PADY+Ld*(NH+GY)};});
+    });
+    var svg=document.createElementNS(SVGNS,'svg');
+    svg.setAttribute('class','plotgraph');
+    svg.setAttribute('viewBox','0 0 '+W+' '+H);
+    svg.setAttribute('preserveAspectRatio','xMidYMin meet');
+    svg.style.maxHeight=Math.min(H,300)+'px';
+    steps.forEach(function(s,i2){
+      parents[i2].forEach(function(p){
+        var a=pos[idx[p]],b=pos[i2];
+        var x1=a.x+NW/2,y1=a.y+NH,x2=b.x+NW/2,y2=b.y,mid=(y1+y2)/2;
+        var path=document.createElementNS(SVGNS,'path');
+        path.setAttribute('class','pg-edge');
+        path.setAttribute('d','M'+x1+' '+y1+' C'+x1+' '+mid+' '
+          +x2+' '+mid+' '+x2+' '+y2);
+        svg.appendChild(path);
+      });
+    });
+    steps.forEach(function(s,i2){
+      var p=pos[i2];
+      var g=document.createElementNS(SVGNS,'g');
+      g.setAttribute('class','pg-node');
+      g.setAttribute('transform','translate('+p.x+','+p.y+')');
+      g.setAttribute('tabindex','0');g.setAttribute('role','button');
+      var r=document.createElementNS(SVGNS,'rect');
+      r.setAttribute('width',NW);r.setAttribute('height',NH);
+      r.setAttribute('rx',7);r.setAttribute('fill',nodeColor(s));
+      g.appendChild(r);
+      var t=document.createElementNS(SVGNS,'text');
+      t.setAttribute('x',NW/2);t.setAttribute('y',NH/2+4);
+      t.setAttribute('text-anchor','middle');
+      var label=s.title||splitRef(s.ns)[1];
+      if(label.length>22) label=label.slice(0,21)+'…';
+      t.textContent=label;g.appendChild(t);
+      var open=function(){onNode?onNode(s):openVFull(s);};
+      g.addEventListener('click',open);
+      g.addEventListener('keydown',function(e){
+        if(e.key==='Enter'||e.key===' '){e.preventDefault();open();}});
+      svg.appendChild(g);
+    });
+    var wrap=document.createElement('div');wrap.className='plotgraph-wrap';
+    var lbl=document.createElement('div');lbl.className='pg-eyebrow';
+    lbl.textContent='dependency graph';
+    wrap.appendChild(lbl);wrap.appendChild(svg);
+    return wrap;
+  }
+  /* ---- the docs "view plot trace" popup ---- */
+  var traceItem=null;
+  function traceSpecForItem(it){
+    var key='semtrace:'+it.ns;
+    function load(){
+      try{return JSON.parse(localStorage.getItem(key))||[];}
+      catch(e){return [];}}
+    function save(a){try{localStorage.setItem(key,JSON.stringify(a));}
+      catch(e){}}
+    var list=load();
+    return {
+      groups:[lineageForItem(it.ns)].filter(Boolean),
+      list:function(){return list;},
+      toggle:function(ns){var i=list.indexOf(ns);
+        if(i>=0)list.splice(i,1);else list.push(ns);save(list);}
+    };
+  }
+  function openPlotTrace(stem,anchor){
+    var it=resolveRef(stem?nsKey(stem,anchor):anchor)||resolveRef(anchor);
+    var pop=$('#tracepop'),body=$('#tracepop-body');
+    if(!it||!pop||!body) return;
+    traceItem={stem:stem,anchor:anchor,it:it};
+    body.innerHTML='';
+    var tt=$('#tracepop-t'); if(tt) tt.textContent=it.title||'Plot trace';
+    var group=lineageForItem(it.ns);
+    if(!group||!group.steps.length){
+      var none=document.createElement('p');none.className='tracepop-none';
+      none.textContent='No code lineage was found for this plot.';
+      body.appendChild(none);
+    } else {
+      var traceEl=renderTrace(traceSpecForItem(it));
+      /* clicking a graph node expands that cell's step in the trace below
+         (openVFull's overlay lives inside the hidden deck, so avoid it) */
+      var gr=plotGraph(group,function(step){
+        var b=body.querySelector('.vo-step[data-ns="'+step.ns+'"]');
+        if(!b){
+          /* the step is currently hidden in the trace — reveal it (persist),
+             rebuild the whole popup, then open the now-visible step */
+          traceSpecForItem(it).toggle(step.ns);
+          openPlotTrace(stem,anchor);
+          b=body.querySelector('.vo-step[data-ns="'+step.ns+'"]');
+          if(!b) return;
+        }
+        if(!b.classList.contains('open')){
+          var hh=b.querySelector('.vo-step-h'); if(hh) hh.click();
+        }
+        b.scrollIntoView({block:'center'});
+      });
+      if(gr) body.appendChild(gr);
+      body.appendChild(traceEl);
+    }
+    pop.hidden=false;
+  }
+  function closePlotTrace(){var pop=$('#tracepop'); if(pop) pop.hidden=true;}
   function lineageFor(s){
     /* one group per framed card, ordered like the frames sit on the
        slide (row by row, left to right); each group = that card's full
@@ -5048,9 +5450,10 @@ _DECK_JS = r"""
   function closeVFull(){
     var vf=$('#vfull'); if(vf) vf.hidden=true;
   }
-  function traceStep(st,k,g,multi,isHidden,s){
+  function traceStep(st,k,g,multi,isHidden,spec,doRebuild){
     var box=document.createElement('div');
     box.className='vo-step'+(isHidden?' hidden':'');
+    box.setAttribute('data-ns',st.ns);
     var h=document.createElement('button');h.className='vo-step-h';
     h.title='Expand this cell';
     var n=document.createElement('span');n.className='vo-num';
@@ -5072,10 +5475,10 @@ _DECK_JS = r"""
     eye.className='vo-eye'+(isHidden?' off':'');
     eye.innerHTML='&#128065;';
     eye.title=isHidden
-      ?'Hidden while presenting — click to show it again'
-      :'Hide this step while presenting';
+      ?'Hidden — click to show it again'
+      :'Hide this step';
     eye.addEventListener('click',function(e){
-      e.stopPropagation();toggleHidden(s,st.ns);rebuildTrace();});
+      e.stopPropagation();spec.toggle(st.ns);doRebuild();});
     h.appendChild(eye);
     var fb=document.createElement('span');fb.className='vo-full';
     fb.innerHTML='&#x26F6;';fb.title='View this cell full screen';
@@ -5109,21 +5512,24 @@ _DECK_JS = r"""
       else box.classList.remove('open');
     });
   }
-  function buildTrace(s){
-    var hidden=hiddenSet(s);
+  function traceNode(spec,rebuild){
+    var groups=spec.groups||[];
+    var hidden=hiddenSet({hidden:spec.list()});
     /* count DISTINCT hidden cells (a shared upstream cell can appear in
        several plot columns but is one step to the user) */
     var counted={},nHidden=0;
-    vGroups.forEach(function(g){g.steps.forEach(function(st){
+    groups.forEach(function(g){g.steps.forEach(function(st){
       if(hidden[st.ns]&&!counted[st.ns]){counted[st.ns]=1;nHidden++;}});});
+    var showHidden=spec.showHiddenRef.v;
     /* the visible groups drive BOTH the plot strip and the columns, so
        they always line up even when a whole plot's trace is hidden */
-    var visGroups=vGroups.map(function(g){
+    var visGroups=groups.map(function(g){
       return {g:g,vis:g.steps.filter(function(st){
-        return traceShowHidden||!hidden[st.ns];})};
+        return showHidden||!hidden[st.ns];})};
     }).filter(function(x){return x.vis.length;});
     var multi=visGroups.length>1;
     var v=document.createElement('div');v.className='vtrace';
+    var doRebuild=function(){rebuild(v);};
     var tl=document.createElement('div');tl.className='vo-title';
     var xa=document.createElement('button');xa.className='vo-xall';
     xa.textContent='Expand all';
@@ -5136,14 +5542,14 @@ _DECK_JS = r"""
     tl.appendChild(xa);tl.appendChild(ca);
     if(nHidden){
       var sh=document.createElement('button');
-      sh.className='vo-xall'+(traceShowHidden?' on':'');
-      sh.textContent=traceShowHidden?'Hide hidden'
+      sh.className='vo-xall'+(showHidden?' on':'');
+      sh.textContent=showHidden?'Hide hidden'
         :('Show hidden ('+nHidden+')');
-      sh.title=traceShowHidden
+      sh.title=showHidden
         ?'Hide the steps you marked hidden again'
         :'Reveal the steps you hid — to view them or unhide them';
       sh.addEventListener('click',function(){
-        traceShowHidden=!traceShowHidden;rebuildTrace();});
+        spec.showHiddenRef.v=!spec.showHiddenRef.v;doRebuild();});
       tl.appendChild(sh);
     }
     v.appendChild(tl);
@@ -5173,8 +5579,8 @@ _DECK_JS = r"""
         var sec=st.sectitle||'',sub=st.subsection||'';
         if(sec!==lastSec){
           if(sec){
-            var sh=document.createElement('div');sh.className='vo-sec';
-            sh.textContent=sec;col.appendChild(sh);
+            var sd=document.createElement('div');sd.className='vo-sec';
+            sd.textContent=sec;col.appendChild(sd);
           }
           lastSec=sec;lastSub=null;
         }
@@ -5185,7 +5591,7 @@ _DECK_JS = r"""
           }
           lastSub=sub;
         }
-        col.appendChild(traceStep(st,k,g,multi,!!hidden[st.ns],s));
+        col.appendChild(traceStep(st,k,g,multi,!!hidden[st.ns],spec,doRebuild));
       });
       cols.appendChild(col);
     });
@@ -5216,7 +5622,7 @@ _DECK_JS = r"""
   function renderSlide(){
     var s=pres.slides[cur];
     stage.innerHTML='';
-    vGroups=[];traceShowHidden=false;
+    vGroups=[];
     closeVFull();
     if(!s){
       stage.innerHTML='<div class="slide slide-empty"><p>No slides yet.'
@@ -6562,6 +6968,13 @@ _DECK_JS = r"""
     var host=$('#dc-nbs'); if(!host) return;
     host.innerHTML='';
     var nbs=presNbs(pres);
+    var btn=$('#dc-nbs-btn');
+    if(btn){
+      /* only meaningful when the deck pulls from named notebooks (namespaced
+         refs) — a static single-file export has none */
+      btn.hidden=!nbs.length;
+      btn.textContent='📚 Notebooks ('+nbs.length+')';
+    }
     if(!nbs.length){host.hidden=true;return;}
     host.hidden=false;
     var l=document.createElement('span');l.className='dc-nbs-l';
@@ -6574,6 +6987,92 @@ _DECK_JS = r"""
       c.title=open?stem+' — open':stem+' — not currently open';
       host.appendChild(c);
     });
+  }
+  /* ---- "notebooks in this presentation" popover: open all / refresh all ----
+     stem -> path resolves from an open shell, else a recent path with the
+     same filename (paths only exist in the app + web builds) */
+  function pathStem(p){
+    var s=String(p||''),parts=s.split(/[\/\\]/),nm=parts[parts.length-1]||s;
+    nm=nm.split('?')[0].split('#')[0];
+    try{nm=decodeURIComponent(nm);}catch(e){}
+    return nm.replace(/\.ipynb$/i,'');
+  }
+  function nbPathFor(stem){
+    var sh=APP.shells&&APP.shells[stem];
+    if(sh&&sh.path) return sh.path;
+    var rec=(APP.project&&APP.project.recent)||[];
+    for(var i=0;i<rec.length;i++)
+      if(pathStem(rec[i])===stem) return rec[i];
+    return null;
+  }
+  function nbInfo(){
+    return presNbs(pres).map(function(stem){
+      var open=APP.order.indexOf(stem)>=0;
+      return {stem:stem,open:open,
+        path:open?((APP.shells[stem]&&APP.shells[stem].path)||''):nbPathFor(stem)};
+    });
+  }
+  function nbsCanOpen(){return APP.mode==='app'||APP.mode==='web';}
+  function openPresNbs(missingOnly){
+    if(!nbsCanOpen()){toast('Opening notebooks needs the PlotLine app');return;}
+    var info=nbInfo(),acted=0,cannot=0;
+    info.forEach(function(n){
+      if(missingOnly&&n.open) return;
+      if(n.path){APP.openPath(n.path);acted++;} else cannot++;
+    });
+    if(!acted&&cannot) toast('Could not locate those notebooks to open');
+    else if(cannot) toast((missingOnly?'Opening ':'Refreshing ')+acted
+      +'; '+cannot+' could not be located');
+    else toast((missingOnly?'Opening ':'Refreshing ')+acted+' notebook'
+      +(acted===1?'':'s')+'…');
+    hideNbsMenu();
+  }
+  function hideNbsMenu(){
+    var m=$('#dc-nbs-menu'); if(m) m.hidden=true;
+    var b=$('#dc-nbs-btn'); if(b) b.setAttribute('aria-expanded','false');
+  }
+  function renderNbsMenu(){
+    var m=$('#dc-nbs-menu'); if(!m) return;
+    m.innerHTML='';
+    var info=nbInfo();
+    if(!info.length){
+      m.innerHTML='<div class="dc-nbs-empty">No notebooks yet &mdash; add cells '
+        +'from your notebooks to a slide.</div>';return;}
+    var h=document.createElement('div');h.className='dc-nbs-menuh';
+    h.textContent='notebooks in this presentation';m.appendChild(h);
+    info.forEach(function(n){
+      var row=document.createElement('div');
+      row.className='dc-nbrow '+(n.open?'open':(n.path?'avail':'gone'));
+      var dot=document.createElement('span');dot.className='dc-nbrow-dot';
+      var nm=document.createElement('span');nm.className='dc-nbrow-nm';
+      nm.textContent=n.stem;
+      var st=document.createElement('span');st.className='dc-nbrow-st';
+      st.textContent=n.open?'open':(n.path?'closed':'not found');
+      row.appendChild(dot);row.appendChild(nm);row.appendChild(st);
+      if(n.path&&nbsCanOpen()){
+        row.title=n.path;row.classList.add('clickable');
+        row.addEventListener('click',function(){
+          APP.openPath(n.path);hideNbsMenu();});
+      }
+      m.appendChild(row);
+    });
+    if(nbsCanOpen()){
+      var acts=document.createElement('div');acts.className='dc-nbacts';
+      var ob=document.createElement('button');ob.className='dbtn';
+      ob.textContent='Open notebooks';
+      ob.title='Open every notebook this presentation uses that is not '
+        +'already open';
+      ob.addEventListener('click',function(){openPresNbs(true);});
+      var rb=document.createElement('button');rb.className='dbtn';
+      rb.textContent='Refresh all';
+      rb.title='Reload every notebook this presentation uses from disk / URL';
+      rb.addEventListener('click',function(){openPresNbs(false);});
+      acts.appendChild(ob);acts.appendChild(rb);m.appendChild(acts);
+    } else {
+      var note=document.createElement('div');note.className='dc-nbs-empty';
+      note.textContent='Open / refresh is available in the PlotLine app.';
+      m.appendChild(note);
+    }
   }
   function renderCreate(){
     renderPresRow();renderControls();renderPresNbs();renderFilm();
@@ -6686,6 +7185,39 @@ _DECK_JS = r"""
   if(upBtn) upBtn.addEventListener('click',scrollToSlide);
   var vfClose=$('#vfull-close');
   if(vfClose) vfClose.addEventListener('click',closeVFull);
+  /* ---- docs "view plot trace" popup: close / scrim / open-as-tab / Esc ---- */
+  var tpClose=$('#tracepop-close'),tpScrim=$('#tracepop-scrim'),
+      tpTab=$('#tracepop-tab');
+  if(tpClose) tpClose.addEventListener('click',closePlotTrace);
+  if(tpScrim) tpScrim.addEventListener('click',closePlotTrace);
+  if(tpTab) tpTab.addEventListener('click',function(){
+    if(traceItem&&window.SemApp&&window.SemApp.openTraceTab){
+      window.SemApp.openTraceTab(traceItem.stem,traceItem.anchor,
+        (traceItem.it&&traceItem.it.title)||'Plot trace');
+      closePlotTrace();
+    }
+  });
+  document.addEventListener('keydown',function(e){
+    var pop=$('#tracepop');
+    if(pop&&!pop.hidden&&e.key==='Escape'){
+      e.preventDefault();e.stopPropagation();closePlotTrace();}
+  },true);
+  /* the docs side (a separate IIFE) opens the popup through this bridge */
+  window.SemTrace={open:function(stem,anchor){openPlotTrace(stem,anchor);}};
+  /* ---- "Notebooks" popover in the deck header ---- */
+  var nbsBtn=$('#dc-nbs-btn'),nbsMenu=$('#dc-nbs-menu');
+  if(nbsBtn) nbsBtn.addEventListener('click',function(e){
+    e.stopPropagation();
+    if(!nbsMenu) return;
+    if(nbsMenu.hidden){
+      renderNbsMenu();nbsMenu.hidden=false;
+      nbsBtn.setAttribute('aria-expanded','true');
+    } else hideNbsMenu();
+  });
+  document.addEventListener('click',function(e){
+    if(nbsMenu&&!nbsMenu.hidden&&!nbsMenu.contains(e.target)
+       &&e.target!==nbsBtn) hideNbsMenu();
+  });
   document.addEventListener('fullscreenchange',function(){
     /* Esc always exits browser fullscreen (the page cannot prevent
        it), so Esc while presenting leaves the presentation entirely —
@@ -7220,12 +7752,12 @@ _TEMPLATE = """<!doctype html>
     <button class="tab-openbtn" id="tab-open" hidden
       title="Open notebooks">+ Open</button>
     <button class="toggle tv" id="tv-figs"
-      title="Show or hide figure cards"></button>
+      title="Figure cards: click to show / hide"></button>
     <button class="toggle tv" id="tv-markup"
-      title="Show or hide markdown/equation cards"></button>
+      title="Markdown / equation cards: click to show / hide"></button>
     <button class="toggle tv" id="tv-code"
-      title="Show or hide ALL code: code cards and the code folded under
- every figure and dataset"></button>
+      title="All code (code cards + the code folded under every figure).
+ Click to cycle: Visible -> Collapsed -> Hidden"></button>
     <button class="toggle" id="ck-filter-btn"
       title="Advanced: hide specific code cell types (imports, plotting,
  …)">Types &#9662;</button>
@@ -7960,6 +8492,17 @@ def _self_test() -> None:
     assert 'id="ck-filter-btn"' in out and 'id="ck-filter-menu"' in out
     # huge printed output is capped + scrollable in the document view
     assert "max-height:min(440px,62vh)" in out
+    # code filter is a 3-state cycle (Visible/Collapsed/Hidden), not on/off
+    assert "var CODE_CYCLE=['visible','collapsed','hidden']" in out
+    assert "function applyCodeState" in out and ".codewrap.code-off" in out
+    # bare code cells (no output, no toggle) must never be folded to a husk
+    assert "w.classList.contains('bare')){w.setAttribute('data-open'" in out
+    # plain 'code' is a filter type too, so unchecking all == hide code
+    assert "'constant','code']" in out
+    # per-cell eyes: one on every card header, one on every sidebar item
+    assert 'class="cell-eye"' in out and 'class="navitem-eye"' in out
+    assert "function setCellOff" in out
+    assert ".navitem.cell-off" in out   # hidden cell stays in the sidebar
     # h1 (# ) headings become sections too, not just the document title
     hdoc = parse_notebook({"cells": [
         {"cell_type": "markdown", "source": "# PR"},
@@ -7969,6 +8512,31 @@ def _self_test() -> None:
     assert any(s.title == "PR" and s.level == 1 for s in hdoc.sections)
     assert any(s.title == "Details" and s.level == 2 for s in hdoc.sections)
     assert hdoc.title == "PR"          # first h1 also names the document
+    # headings are POSITIONAL: two sections sharing a title stay distinct and
+    # in order — content is never merged across parents (regression guard)
+    ddoc = parse_notebook({"cells": [
+        {"cell_type": "markdown", "source": "# Model A"},
+        {"cell_type": "code", "source": "a = 1", "outputs": []},
+        {"cell_type": "markdown", "source": "## Summary"},
+        {"cell_type": "code", "source": "sa = 1", "outputs": []},
+        {"cell_type": "markdown", "source": "# Model B"},
+        {"cell_type": "code", "source": "b = 1", "outputs": []},
+        {"cell_type": "markdown", "source": "## Summary"},
+        {"cell_type": "code", "source": "sb = 1", "outputs": []}]})
+    assert [s.title for s in ddoc.sections] == \
+        ["Model A", "Summary", "Model B", "Summary"]
+    # the SECOND Summary owns Model B's summary cell, not the first
+    summaries = [s for s in ddoc.sections if s.title == "Summary"]
+    assert "sa = 1" in summaries[0].items[0].members[0]["code"]
+    assert "sb = 1" in summaries[1].items[0].members[0]["code"]
+    # a real `# Overview` claims the synthetic pre-heading bucket (one section,
+    # promoted to level 1) instead of leaving a mis-styled level-2 twin
+    odoc = parse_notebook({"cells": [
+        {"cell_type": "code", "source": "import os", "outputs": []},
+        {"cell_type": "markdown", "source": "# Overview"},
+        {"cell_type": "code", "source": "z = 2", "outputs": []}]})
+    ovs = [s for s in odoc.sections if s.title == "Overview"]
+    assert len(ovs) == 1 and ovs[0].level == 1
     assert 'data-anchor="clim"' in out and 'data-anchor="cell:md1"' in out
     assert '"stem": "demo"' in out or '"stem":"demo"' in out
     # markdown notes: bullets + bold survive, math left for MathJax
@@ -8090,7 +8658,17 @@ def _self_test() -> None:
                      "ref": "clim"}],
          "hidden": ["nb::cell:c-prep", ""]}]}])
     assert pres_h[0]["slides"][0]["hidden"] == ["nb::cell:c-prep"]
-    assert "vo-eye" in out and "traceShowHidden" in out
+    # the code trace is one reusable component (presentation + docs popup)
+    assert "vo-eye" in out and "function renderTrace" in out
+    assert "function traceNode" in out and "function lineageForItem" in out
+    # docs "view plot trace": figure button, popup, per-plot graph, bridge
+    assert 'class="plot-trace-btn"' in out and 'id="tracepop"' in out
+    assert "function openPlotTrace" in out and "function plotGraph" in out
+    assert "window.SemTrace" in out and ".pg-node" in out
+    # presentation "Notebooks" popover: open-all / refresh-all
+    assert 'id="dc-nbs-btn"' in out and 'id="dc-nbs-menu"' in out
+    assert "function renderNbsMenu" in out and "function openPresNbs" in out
+    assert "Refresh all" in out and "Open notebooks" in out
     pres3 = _as_presentations([{"name": "x", "slides": [
         {"layout": "title", "title": "T",
          "tprops": {"x": 30, "y": 20, "size": 5}},
