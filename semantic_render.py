@@ -233,6 +233,35 @@ class RenderedOutput:
     payload: str       # html fragment ready to drop in
     has_image: bool = False
     has_xarray: bool = False
+    ot: str = "print"  # output-type slug for the Output-types filter
+
+
+def _repr_kind(text: str) -> str:
+    """Guess the Python type of an execute_result repr, for the finer
+    Output-types filter (numeric / string / list / dict / …).  Falls back to
+    'value' for anything unrecognised; 'print' for empty."""
+    s = text.strip()
+    if not s:
+        return "print"
+    c = s[0]
+    if c == "[":
+        return "list"
+    if c == "{":
+        # dict has ':' before the first closing brace; otherwise it's a set
+        return "dict" if ":" in s.split("}", 1)[0] else "set"
+    if c == "(":
+        return "tuple"
+    if c in "'\"" or s[:2] in ("b'", 'b"', "r'", 'r"', "f'", 'f"'):
+        return "string"
+    if s in ("True", "False"):
+        return "bool"
+    if s == "None":
+        return "none"
+    if re.match(r"^[-+]?(\d[\d_]*\.?\d*|\.\d+)([eE][-+]?\d+)?j?$", s):
+        return "numeric"
+    if s.startswith(("array(", "tensor(", "np.", "matrix(", "DataFrame")):
+        return "array"
+    return "value"
 
 
 def render_outputs(outputs: list[dict]) -> list[RenderedOutput]:
@@ -245,7 +274,8 @@ def render_outputs(outputs: list[dict]) -> list[RenderedOutput]:
             if text.strip():
                 rendered.append(RenderedOutput(
                     "text",
-                    f'<pre class="stream ot-print">{html.escape(text)}</pre>'))
+                    f'<pre class="stream ot-print">{html.escape(text)}</pre>',
+                    ot="print"))
         elif otype in ("execute_result", "display_data"):
             data = out.get("data", {})
             if "image/png" in data:
@@ -269,22 +299,28 @@ def render_outputs(outputs: list[dict]) -> list[RenderedOutput]:
                     rendered.append(RenderedOutput(
                         "xarray",
                         f'<div class="xr-wrap ot-dataset">{htmltext}</div>',
-                        has_xarray=True))
+                        has_xarray=True, ot="dataset"))
                 else:
                     rendered.append(RenderedOutput(
                         "html",
-                        f'<div class="rich ot-result">{htmltext}</div>'))
+                        f'<div class="rich ot-result">{htmltext}</div>',
+                        ot="result"))
             elif "text/plain" in data:
                 text = _as_text(data["text/plain"])
                 if text.strip():
+                    # classify the repr so the Output-types filter can offer
+                    # numeric / string / list / dict / … not just "print"
+                    ot = _repr_kind(text)
                     rendered.append(RenderedOutput(
                         "text",
-                        f'<pre class="result ot-print">{html.escape(text)}</pre>'))
+                        f'<pre class="result ot-{ot}">{html.escape(text)}</pre>',
+                        ot=ot))
         elif otype == "error":
             tb = _strip_ansi("\n".join(out.get("traceback", [])))
             rendered.append(RenderedOutput(
                 "error",
-                f'<pre class="error ot-error">{html.escape(tb)}</pre>'))
+                f'<pre class="error ot-error">{html.escape(tb)}</pre>',
+                ot="error"))
     return rendered
 
 
@@ -1282,13 +1318,10 @@ def render_item(item: Item) -> str:
     if fig_html:
         cb_parts.append(f'<div class="cb-part cb-fig">{fig_html}</div>')
     if others:
-        _ot_map = {"text": "print", "xarray": "dataset",
-                   "html": "result", "error": "error"}
         ot_types: list[str] = []
         for o in others:
-            ot = _ot_map.get(o.kind, "print")
-            if ot not in ot_types:
-                ot_types.append(ot)
+            if o.ot not in ot_types:
+                ot_types.append(o.ot)
         cb_parts.append(
             f'<div class="cb-part cb-out" data-ot="{" ".join(ot_types)}">'
             + "".join(o.payload for o in others) + "</div>")
@@ -1470,7 +1503,6 @@ def render_sections(doc: Document) -> str:
             f'<div class="sectionhead-txt">'
             f'<span class="eyebrow">section</span>'
             f'<h2>{html.escape(s.title)}</h2></div>'
-            f'<span class="sec-spring"></span>'
             f'<button class="sec-eye" data-sec="{sid}" '
             f'title="Hide this whole section (restore it from the sidebar)" '
             f'aria-label="Hide this whole section">&#128065;</button>'
@@ -1840,7 +1872,6 @@ body:not(.light) .docbar-p{color:#8ba0b2;}
   border-radius:4px;transition:transform .15s,color .15s;}
 .sec-chev:hover{color:var(--ink);}
 .section.sec-collapsed .sec-chev{transform:rotate(-90deg);}
-.sec-spring{flex:1;}
 .sec-eye{flex:none;background:none;border:none;color:var(--ink-3);
   cursor:pointer;font-size:14px;line-height:1;padding:3px 6px;
   border-radius:5px;opacity:0;transition:opacity .12s,background .12s;}
@@ -1852,6 +1883,9 @@ body:not(.light) .docbar-p{color:#8ba0b2;}
 /* hidden drops the whole section from the document (restore from the sidebar) */
 .section.sec-off{display:none;}
 .navsec-row.sec-off{opacity:.5;}
+/* a hidden section keeps only its (dimmed) header row — fold its cell links
+   away too, else they stay bright but point at a display:none target */
+.navsec-row.sec-off+.navitems{display:none;}
 .navsec-eye{flex:none;font-size:11px;line-height:1;padding:1px 4px;
   border-radius:4px;position:relative;opacity:0;color:inherit;cursor:pointer;
   transition:opacity .12s,background .12s;}
@@ -1914,6 +1948,16 @@ body:not(.light) .docbar-p{color:#8ba0b2;}
 .cb-fig.part-fold.part-open{cursor:default;border:none;padding:0;}
 .cb-fig.part-fold.part-open>*{display:revert;}
 .cb-fig.part-fold.part-open::before{display:none;}
+/* Output = Collapsed folds the printed output the same way (click to reveal) */
+.cb-out.part-fold>*{display:none;}
+.cb-out.part-fold{cursor:pointer;border:1px dashed var(--line);border-radius:8px;
+  padding:8px 12px;margin-top:12px;position:relative;min-height:0;}
+.cb-out.part-fold::before{content:"\25b8  Show output";font-family:var(--mono);
+  font-size:11px;color:var(--ink-3);letter-spacing:.02em;}
+.cb-out.part-fold:hover::before{color:var(--cyan-deep);}
+.cb-out.part-fold.part-open{cursor:default;border:none;padding:0;}
+.cb-out.part-fold.part-open>*{display:revert;}
+.cb-out.part-fold.part-open::before{display:none;}
 
 .cardhead{display:flex;align-items:center;gap:10px;margin-bottom:12px;
   padding-left:6px;}
@@ -2161,11 +2205,10 @@ right. <b>Plots</b> comes first because a figure is the headline of a
 cell; everything else a notebook produces is, loosely, its
 <i>output</i>.</p>
 <ul>
-<li><b>Plots</b>, <b>Markdown</b> and <b>Code</b> cycle
+<li>All four &mdash; <b>Plots</b>, <b>Markdown</b>, <b>Code</b> and
+<b>Output</b> (printed tables, values, text) &mdash; cycle
 <i>Visible &rarr; Collapsed &rarr; Hidden</i>. <i>Collapsed</i> folds
-that part away behind a click-to-open toggle; <i>Hidden</i> removes it.
-<b>Output</b> (printed tables, values, text) is a simple
-Visible / Hidden.</li>
+that part away behind a click-to-open toggle; <i>Hidden</i> removes it.</li>
 <li><b>Code means the code in EVERY cell</b> &mdash; imports, prints,
 plotting, a bare expression &mdash; not just standalone code cells. So
 <i>Code: Collapsed</i> tucks the source away under every figure and
@@ -2173,9 +2216,11 @@ result at once, and a cell that is <i>only</i> code disappears entirely
 when Code is Hidden.</li>
 <li><b>Code types</b> and <b>Output types</b> (the two
 <b>&#9662;</b> menus) are finer control: untick <i>imports</i>,
-<i>plotting</i>, <i>print</i>, <i>dataset</i>, <i>error</i>&hellip; to
-hide just those. Untick every code type and it is the same as hiding
-code.</li>
+<i>plotting</i>&hellip; on the code side, or <i>print</i>,
+<i>dataset</i>, <i>numeric</i>, <i>string</i>, <i>list</i>,
+<i>dict</i>, <i>error</i>&hellip; on the output side, to hide just
+those. Only the types actually present in the notebook are listed.
+Untick every code type and it is the same as hiding code.</li>
 </ul>
 
 <h3>The sidebar</h3>
@@ -2668,6 +2713,17 @@ body.creating-docs .apptop{
 .ckf-dot.ot-sw-dataset{background:#4d90c0;}
 .ckf-dot.ot-sw-result{background:#9a7cc0;}
 .ckf-dot.ot-sw-error{background:#cf6a5a;}
+/* finer text/plain repr types */
+.ckf-dot.ot-sw-numeric{background:#4fae8f;}
+.ckf-dot.ot-sw-string{background:#c9a24b;}
+.ckf-dot.ot-sw-list{background:#5b8fd0;}
+.ckf-dot.ot-sw-dict{background:#a878c8;}
+.ckf-dot.ot-sw-tuple{background:#7b86d0;}
+.ckf-dot.ot-sw-set{background:#4fb0c0;}
+.ckf-dot.ot-sw-bool{background:#d08a4f;}
+.ckf-dot.ot-sw-none{background:#7a8794;}
+.ckf-dot.ot-sw-array{background:#5b7589;}
+.ckf-dot.ot-sw-value{background:#8a93a0;}
 .ckf-empty{color:#7e93a4;font-size:11px;padding:8px;}
 #ck-filter-btn.on,#ot-filter-btn.on{border-color:var(--cyan);color:#fff;
   background:#39a9c022;}
@@ -3069,11 +3125,11 @@ _JS = r"""
   });
 
   /* ---- global show/hide filters (top bar; apply to every tab) ----
-     one state per ROLE. Markdown / Code / Plots cycle Visible -> Collapsed
-     -> Hidden; Output is Visible / Hidden. The button LABEL shows the
-     current state, not the action. */
+     one state per ROLE. Markdown / Code / Plots / Output all cycle
+     Visible -> Collapsed -> Hidden. The button LABEL shows the current
+     state, not the action. */
   var mdState='visible',codeState='collapsed',plotState='visible';
-  var outState='visible';                 /* 2-state */
+  var outState='visible';                 /* 3-state, like the rest */
   var CODE_CYCLE=['visible','collapsed','hidden'];
   var CODE_LABEL={visible:'Visible',collapsed:'Collapsed',hidden:'Hidden'};
   var ckHidden={};   /* advanced: code subtypes the user has hidden */
@@ -3083,7 +3139,7 @@ _JS = r"""
     var b=$('#'+id); if(!b) return;
     b.innerHTML='<span class="tdot"></span>'+label+': '+CODE_LABEL[state];
     b.classList.toggle('off',state==='hidden');
-    b.classList.toggle('half',state==='collapsed');   /* never for Output */
+    b.classList.toggle('half',state==='collapsed');
     b.setAttribute('data-cs',state);
   }
   function renderTypeButtons(){
@@ -3118,7 +3174,11 @@ _JS = r"""
             fig.classList.toggle('part-fold',plotState==='collapsed');
             if(plotState!=='collapsed') fig.classList.remove('part-open');
           }
-          if(out) out.classList.toggle('part-off',outState==='hidden');
+          if(out){
+            out.classList.toggle('part-off',outState==='hidden');
+            out.classList.toggle('part-fold',outState==='collapsed');
+            if(outState!=='collapsed') out.classList.remove('part-open');
+          }
           if(cw) cw.classList.toggle('code-off',codeState==='hidden'||ckOff);
           var figVis=!!fig&&plotState!=='hidden';
           /* the advanced Output-types filter hides individual outputs by kind;
@@ -3290,7 +3350,7 @@ _JS = r"""
     plotState=cycle3(plotState);applyFilters();});
   var opBtn=$('#tv-output');
   if(opBtn) opBtn.addEventListener('click',function(){
-    outState=outState==='visible'?'hidden':'visible';applyFilters();});
+    outState=cycle3(outState);applyFilters();});
   var cb=$('#tv-code');
   if(cb) cb.addEventListener('click',function(){
     codeState=cycle3(codeState);applyFilters();applyCodeState();});
@@ -3786,6 +3846,15 @@ _JS = r"""
     $$('.cb-fig',shell).forEach(function(f){
       f.addEventListener('click',function(){
         if(f.classList.contains('part-fold')) f.classList.toggle('part-open');
+      });
+    });
+    /* ---- output folded by Output = Collapsed reveals on click. Open-only
+       (unlike a figure): the output is text/tables you may want to select,
+       so a click inside it must not fold it back up ---- */
+    $$('.cb-out',shell).forEach(function(o){
+      o.addEventListener('click',function(){
+        if(o.classList.contains('part-fold')&&!o.classList.contains('part-open'))
+          o.classList.add('part-open');
       });
     });
   }
@@ -9167,10 +9236,19 @@ def _self_test() -> None:
     assert 'id="ck-filter-btn"' in out and 'id="ck-filter-menu"' in out
     # printed-output cells read "print", markdown notes stay "note"
     assert _BADGE["text"] == "print" and _BADGE["note"] == "note"
-    # advanced OUTPUT-type filter (print/dataset/result/error) + tagged outputs
+    # advanced OUTPUT-type filter + finer repr types (numeric/list/dict/…)
     assert 'id="ot-filter-btn"' in out and 'id="ot-filter-menu"' in out
     assert "function presentOtTypes" in out and ".ot-off{display:none" in out
     assert "ot-print" in out and 'cb-out" data-ot=' in out
+    assert _repr_kind("[1, 2, 3]") == "list" and _repr_kind("42") == "numeric"
+    assert _repr_kind("{'a': 1}") == "dict" and _repr_kind("{1, 2}") == "set"
+    assert _repr_kind("'hi'") == "string" and _repr_kind("(1, 2)") == "tuple"
+    assert _repr_kind("True") == "bool" and _repr_kind("None") == "none"
+    assert _repr_kind("np.float64(1.5)") == "array"
+    _rout = render_outputs([
+        {"output_type": "execute_result", "data": {"text/plain": "[1, 2, 3]"}}])
+    assert _rout and _rout[0].ot == "list" and "ot-list" in _rout[0].payload
+    assert ".ckf-dot.ot-sw-numeric" in out and ".ckf-dot.ot-sw-dict" in out
     # the sidebar key sits at the TOP (before the first section row)
     _nav = render_nav(doc)
     assert "navkey" in _nav and _nav.index("navkey") < _nav.index("navsec-row")
@@ -9184,10 +9262,13 @@ def _self_test() -> None:
     assert pfig and pfig[0].title == "Plot 1" and not pfig[0].title_echo
     # huge printed output is capped + scrollable in the document view
     assert "max-height:min(440px,62vh)" in out
-    # four filters — Markdown/Code/Plots cycle 3 states, Output toggles
+    # four filters — Markdown/Code/Plots/Output ALL cycle 3 states now
     assert "var CODE_CYCLE=['visible','collapsed','hidden']" in out
     assert 'id="tv-markdown"' in out and 'id="tv-plots"' in out
     assert 'id="tv-output"' in out and 'id="tv-code"' in out
+    # Output is 3-state: it cycles like the rest and its part can fold
+    assert "outState=cycle3(outState)" in out
+    assert ".cb-out.part-fold" in out and 'content:"\\25b8  Show output"' in out
     # PART-BASED: a cell's output splits into a filterable figure + output part;
     # the Code filter reaches the code (codewrap) in EVERY non-markdown cell
     assert 'class="cb-part cb-fig"' in out and 'class="cb-part cb-out"' in out
