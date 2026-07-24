@@ -743,34 +743,45 @@ body.creating-docs .apptop{
   display:flex;align-items:center;justify-content:center;
   background:var(--paper-2);z-index:5;overflow:auto;}
 .welcome[hidden]{display:none;}
-.welcome-box{text-align:center;max-width:460px;padding:40px 30px;}
-.welcome-box .brand{justify-content:center;font-size:19px;letter-spacing:.2em;
-  margin-bottom:4px;}
-.welcome-box h1{font-size:26px;letter-spacing:-.02em;margin:12px 0 8px;
-  color:var(--ink);}
-.welcome-hint{color:var(--ink-3);font-size:13.5px;line-height:1.6;
-  margin:0 0 18px;}
-.recent{margin-top:26px;display:flex;flex-direction:column;gap:6px;
-  text-align:left;}
-.recent-h{font-family:var(--mono);font-size:9.5px;letter-spacing:.18em;
+.welcome-box{text-align:center;max-width:680px;padding:24px 30px 44px;}
+.welcome-wordmark{display:inline-flex;align-items:center;gap:15px;
+  font-family:var(--mono);font-size:clamp(36px,7vw,52px);font-weight:600;
+  letter-spacing:.1em;color:var(--cyan-deep);margin-bottom:16px;}
+.ww-dot{width:clamp(13px,2.4vw,18px);height:clamp(13px,2.4vw,18px);
+  border-radius:50%;background:var(--cyan);box-shadow:0 0 0 6px #39a9c022;
+  flex:none;}
+.welcome-tag{font-size:clamp(17px,2.4vw,21px);line-height:1.5;font-weight:500;
+  color:var(--ink-2);margin:0 auto 30px;max-width:540px;}
+.welcome-steps{list-style:none;margin:0 auto 30px;padding:0;max-width:560px;
+  text-align:left;display:flex;flex-direction:column;gap:15px;}
+.welcome-steps li{display:flex;align-items:flex-start;gap:15px;
+  font-size:16.5px;line-height:1.5;color:var(--ink-2);}
+.ws-n{flex:none;width:30px;height:30px;border-radius:50%;background:#39a9c018;
+  color:var(--cyan-deep);font-family:var(--mono);font-size:15px;font-weight:600;
+  display:inline-flex;align-items:center;justify-content:center;margin-top:1px;}
+.welcome-drop{font-size:14.5px;color:var(--ink-3);margin:18px 0 0;}
+.welcome-drop b{color:var(--ink-2);}
+.recent{margin-top:30px;display:flex;flex-direction:column;gap:6px;
+  text-align:left;max-width:560px;margin-left:auto;margin-right:auto;}
+.recent-h{font-family:var(--mono);font-size:10px;letter-spacing:.18em;
   text-transform:uppercase;color:var(--ink-3);margin-bottom:2px;}
-.recent-i{font-family:var(--mono);font-size:11.5px;color:var(--cyan-deep);
-  background:#fff;border:1px solid var(--line);padding:8px 11px;
+.recent-i{font-family:var(--mono);font-size:12.5px;color:var(--cyan-deep);
+  background:#fff;border:1px solid var(--line);padding:9px 12px;
   border-radius:6px;cursor:pointer;text-align:left;overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap;direction:rtl;}
 .recent-i:hover{border-color:var(--cyan);}
-.welcome-btns{display:flex;gap:8px;justify-content:center;
+.welcome-btns{display:flex;gap:10px;justify-content:center;
   flex-wrap:wrap;}
 .welcome-btns .dbtn{border-color:var(--line);background:#fff;
-  color:var(--ink-2);}
+  color:var(--ink-2);font-size:15px;padding:12px 22px;}
 .welcome-btns .dbtn:hover{border-color:var(--cyan);color:var(--ink);}
 .welcome-btns .dbtn.primary{background:var(--cyan-deep);
   border-color:var(--cyan-deep);color:#fff;}
 .welcome-btns .dbtn.primary:hover{background:var(--cyan);}
-.welcome-links{margin-top:16px;font-size:12.5px;color:var(--ink-3);}
+.welcome-links{margin-top:20px;font-size:14px;color:var(--ink-3);}
 .welcome-links a{color:var(--cyan-deep);text-decoration:none;}
 .welcome-links a:hover{text-decoration:underline;}
-.wl-sep{margin:0 7px;}
+.wl-sep{margin:0 8px;}
 
 /* ---------- help overlay: how to use / what it can do ---------- */
 .helpdlg{position:fixed;inset:0;z-index:135;background:#0a131b88;
@@ -1144,7 +1155,12 @@ body:not(.light) .rawmd h1,body:not(.light) .rawmd h2,
 body:not(.light) .rawmd h3,body:not(.light) .rawmd h4,
 body:not(.light) .rawmd h5,body:not(.light) .rawmd h6{color:#e6edf3;}
 body:not(.light) .welcome{background:#0b141d;}
-body:not(.light) .welcome-box h1{color:#e6edf3;}
+body:not(.light) .welcome-wordmark{color:#7fd8ea;}
+body:not(.light) .welcome-tag{color:#d3dee7;}
+body:not(.light) .welcome-steps li{color:#b3c2ce;}
+body:not(.light) .ws-n{background:#39a9c026;color:#8fe0f0;}
+body:not(.light) .welcome-drop{color:#7e93a4;}
+body:not(.light) .welcome-drop b{color:#c9d6e2;}
 body:not(.light) .recent-i{background:#101c28;
   border-color:#ffffff22;color:#5fc3d8;}
 body:not(.light) .welcome-btns .dbtn{background:#101c28;
@@ -5074,17 +5090,27 @@ fig<span class="op">.</span>tight_layout<span class="op">(</span><span class="op
 </div>
 <div class="welcome" id="welcome" hidden>
   <div class="welcome-box">
-    <p class="brand">PlotLine</p>
-    <h1>Open a notebook</h1>
-    <p class="welcome-hint">Drop .ipynb files anywhere in this window,
-    or browse for them. Each notebook opens as a tab; presentations can
-    mix cards from every open tab.</p>
+    <div class="welcome-wordmark"><span class="ww-dot"></span>PlotLine</div>
+    <p class="welcome-tag">Interactive, auto-syncing displays and filters
+      for your Jupyter notebooks.</p>
+    <ol class="welcome-steps">
+      <li><span class="ws-n">1</span><span>Open your notebooks &mdash; from
+        local files or a GitHub URL.</span></li>
+      <li><span class="ws-n">2</span><span>Filter by cell type, and trace back
+        every cell that builds a plot.</span></li>
+      <li><span class="ws-n">3</span><span>Build presentations from figures,
+        markdown and code straight out of the notebook.</span></li>
+      <li><span class="ws-n">4</span><span>Hit refresh to pull the notebook's
+        latest changes into your slides &mdash; automatically.</span></li>
+    </ol>
     <div class="welcome-btns">
       <button class="dbtn primary" id="welcome-open">Browse
         files&#8230;</button>
       <button class="dbtn" id="welcome-demo" hidden>Try the example
         notebook</button>
     </div>
+    <p class="welcome-drop">&hellip; or drop <b>.ipynb</b> files anywhere in
+      this window.</p>
     <div class="welcome-links">
       <a href="#" id="welcome-tour">Take a tour</a>
       <span class="wl-sep">&middot;</span>
