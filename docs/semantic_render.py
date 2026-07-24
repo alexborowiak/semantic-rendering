@@ -2787,13 +2787,17 @@ _JS = r"""
     APP.order.forEach(function(stem){
       var sh=APP.shells[stem];
       var t=document.createElement('div');
-      t.className='tab'+(stem===APP.active?' current':'');
+      t.className='tab'+(stem===APP.active?' current':'')
+        +(sh.trace?' tracetab':'');
       t.setAttribute('role','tab');
-      t.title=sh.path||sh.title||stem;
+      t.title=sh.trace?(sh.title||'plot trace'):(sh.path||sh.title||stem);
       var lbl=document.createElement('span');lbl.className='tab-t';
-      lbl.textContent=stem;t.appendChild(lbl);
-      if(APP.mode==='app'||APP.mode==='web'){
-        if(sh.path){
+      lbl.textContent=sh.trace?(sh.title||'plot trace'):stem;
+      t.appendChild(lbl);
+      /* trace tabs are transient views — always closeable, even in a
+         static export; notebook tabs keep the app/web reload+close */
+      if(APP.mode==='app'||APP.mode==='web'||sh.trace){
+        if(sh.path&&!sh.trace){
           var r=document.createElement('button');r.className='tab-b';
           r.innerHTML='&#8635;';
           r.title=/^https?:/.test(sh.path)
@@ -3443,6 +3447,31 @@ _JS = r"""
     if(window.MathJax&&MathJax.typesetPromise)
       MathJax.typesetPromise([shell]).catch(function(){});
   }
+  /* a plot trace, opened as its OWN tab (the deck builds the pane; this side
+     mounts it as a synthetic, always-closeable shell in the tab strip) */
+  function openTraceTab(stem,anchor,title){
+    var key='trace::'+stem+'::'+anchor;
+    if(APP.shells[key]){activate(key);return;}
+    if(!(window.SemTrace&&window.SemTrace.buildPane)) return;
+    var built=window.SemTrace.buildPane(stem,anchor);
+    if(!built){alert('Plot trace not available');return;}
+    var shell=document.createElement('div');
+    shell.className='nbshell tracetab';shell.dataset.nb=key;
+    var head=document.createElement('div');head.className='tracetab-head';
+    var eb=document.createElement('span');eb.className='tracetab-eyebrow';
+    eb.textContent='plot trace';
+    var tt=document.createElement('span');tt.className='tracetab-t';
+    tt.textContent=built.title;
+    head.appendChild(eb);head.appendChild(tt);
+    shell.appendChild(head);shell.appendChild(built.node);
+    $('#docs').appendChild(shell);
+    APP.shells[key]={el:shell,data:{},path:'',title:built.title,trace:true};
+    APP.order.push(key);
+    activate(key);
+    if(window.MathJax&&MathJax.typesetPromise)
+      MathJax.typesetPromise([shell]).catch(function(){});
+  }
+  APP.openTraceTab=openTraceTab;
   /* one open per source at a time: repeated Enter/clicks are ignored
      while the fetch runs, and the dialog shows a loading bar */
   var OPENBUSY={},dlgBusyN=0;
@@ -4023,6 +4052,8 @@ _DECK_HTML = """
       <span class="tracepop-eyebrow">plot trace</span>
       <span class="tracepop-t" id="tracepop-t"></span>
       <span class="dc-spring"></span>
+      <button class="dbtn" id="tracepop-tab"
+        title="Open this plot trace as its own tab">&#8599; Open as tab</button>
       <button class="dbtn" id="tracepop-close"
         title="Close (Esc)">&#10005;</button>
     </div>
@@ -4265,6 +4296,18 @@ body:not(.light) .plot-trace-btn:hover{color:#5fc3d8;border-color:#39a9c066;}
 .pg-node:focus{outline:none;}
 .pg-node text{font-family:var(--sans);font-size:12px;fill:#0b141d;
   font-weight:600;pointer-events:none;}
+/* the plot trace opened as its OWN tab: a dark panel in the docs area */
+.nbshell.tracetab{flex-direction:column;background:#0b141d;min-height:0;}
+.nbshell.tracetab:not([hidden]){display:flex;}
+.tracetab-head{flex:none;display:flex;align-items:baseline;gap:10px;
+  padding:16px 26px;border-bottom:1px solid #ffffff14;}
+.tracetab-eyebrow{font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;
+  text-transform:uppercase;color:#5fc3d8;flex:none;}
+.tracetab-t{font-size:17px;font-weight:600;color:#eef4f8;}
+.tracepane-body{flex:1;min-height:0;overflow:auto;padding:18px 26px 34px;}
+.tracepane-body .vtrace{max-height:none;}
+.tracepane-body .vo-full{display:none;}
+.tab.tracetab .tab-t{color:#5fc3d8;}
 
 .slide{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;
   animation:slidein .28s ease;}
@@ -5348,40 +5391,46 @@ _DECK_JS = r"""
         if(i>=0)list.splice(i,1);else list.push(ns);save(list);}
     };
   }
-  function openPlotTrace(stem,anchor){
-    var it=resolveRef(stem?nsKey(stem,anchor):anchor)||resolveRef(anchor);
-    var pop=$('#tracepop'),body=$('#tracepop-body');
-    if(!it||!pop||!body) return;
-    traceItem={stem:stem,anchor:anchor,it:it};
-    body.innerHTML='';
-    var tt=$('#tracepop-t'); if(tt) tt.textContent=it.title||'Plot trace';
+  /* build (graph + trace) for one plot INTO a container; used by both the
+     popup and the "open as tab" pane so they are identical */
+  function fillTraceInto(container,it){
+    container.innerHTML='';
     var group=lineageForItem(it.ns);
     if(!group||!group.steps.length){
       var none=document.createElement('p');none.className='tracepop-none';
       none.textContent='No code lineage was found for this plot.';
-      body.appendChild(none);
-    } else {
-      var traceEl=renderTrace(traceSpecForItem(it));
-      /* clicking a graph node expands that cell's step in the trace below
-         (openVFull's overlay lives inside the hidden deck, so avoid it) */
-      var gr=plotGraph(group,function(step){
-        var b=body.querySelector('.vo-step[data-ns="'+step.ns+'"]');
-        if(!b){
-          /* the step is currently hidden in the trace — reveal it (persist),
-             rebuild the whole popup, then open the now-visible step */
-          traceSpecForItem(it).toggle(step.ns);
-          openPlotTrace(stem,anchor);
-          b=body.querySelector('.vo-step[data-ns="'+step.ns+'"]');
-          if(!b) return;
-        }
-        if(!b.classList.contains('open')){
-          var hh=b.querySelector('.vo-step-h'); if(hh) hh.click();
-        }
-        b.scrollIntoView({block:'center'});
-      });
-      if(gr) body.appendChild(gr);
-      body.appendChild(traceEl);
+      container.appendChild(none);return;
     }
+    var traceEl=renderTrace(traceSpecForItem(it));
+    /* clicking a graph node expands that cell's step in the trace below
+       (openVFull's overlay lives inside the hidden deck, so avoid it) */
+    var gr=plotGraph(group,function(step){
+      var b=container.querySelector('.vo-step[data-ns="'+step.ns+'"]');
+      if(!b){
+        /* step is currently hidden — reveal it (persist) + rebuild in place */
+        traceSpecForItem(it).toggle(step.ns);
+        fillTraceInto(container,it);
+        b=container.querySelector('.vo-step[data-ns="'+step.ns+'"]');
+        if(!b) return;
+      }
+      if(!b.classList.contains('open')){
+        var hh=b.querySelector('.vo-step-h'); if(hh) hh.click();
+      }
+      b.scrollIntoView({block:'center'});
+    });
+    if(gr) container.appendChild(gr);
+    container.appendChild(traceEl);
+  }
+  function traceItemFor(stem,anchor){
+    return resolveRef(stem?nsKey(stem,anchor):anchor)||resolveRef(anchor);
+  }
+  function openPlotTrace(stem,anchor){
+    var it=traceItemFor(stem,anchor);
+    var pop=$('#tracepop'),body=$('#tracepop-body');
+    if(!it||!pop||!body) return;
+    traceItem={stem:stem,anchor:anchor,it:it};
+    var tt=$('#tracepop-t'); if(tt) tt.textContent=it.title||'Plot trace';
+    fillTraceInto(body,it);
     pop.hidden=false;
   }
   function closePlotTrace(){var pop=$('#tracepop'); if(pop) pop.hidden=true;}
@@ -7005,11 +7054,20 @@ _DECK_JS = r"""
       if(pathStem(rec[i])===stem) return rec[i];
     return null;
   }
+  /* a path is actually openable only if APP.openPath can act on it: any path
+     in the app (the server resolves it), but ONLY http(s) URLs in the web
+     build (relative recent entries like the bundled demo can't be re-fetched
+     by openPath) */
+  function nbOpenable(path){
+    if(!path) return false;
+    return APP.mode==='web'?/^https?:\/\//i.test(path):true;
+  }
   function nbInfo(){
     return presNbs(pres).map(function(stem){
       var open=APP.order.indexOf(stem)>=0;
-      return {stem:stem,open:open,
-        path:open?((APP.shells[stem]&&APP.shells[stem].path)||''):nbPathFor(stem)};
+      var path=open?((APP.shells[stem]&&APP.shells[stem].path)||'')
+        :nbPathFor(stem);
+      return {stem:stem,open:open,path:path,openable:nbOpenable(path)};
     });
   }
   function nbsCanOpen(){return APP.mode==='app'||APP.mode==='web';}
@@ -7018,13 +7076,17 @@ _DECK_JS = r"""
     var info=nbInfo(),acted=0,cannot=0;
     info.forEach(function(n){
       if(missingOnly&&n.open) return;
-      if(n.path){APP.openPath(n.path);acted++;} else cannot++;
+      if(n.openable){APP.openPath(n.path);acted++;} else cannot++;
     });
-    if(!acted&&cannot) toast('Could not locate those notebooks to open');
-    else if(cannot) toast((missingOnly?'Opening ':'Refreshing ')+acted
-      +'; '+cannot+' could not be located');
-    else toast((missingOnly?'Opening ':'Refreshing ')+acted+' notebook'
-      +(acted===1?'':'s')+'…');
+    var verb=missingOnly?'Opening ':'Reloading ';
+    if(!acted&&!cannot)
+      toast(missingOnly?'All notebooks are already open':'Nothing to reload');
+    else if(!acted)
+      toast('Could not '+(missingOnly?'open':'reload')+' those notebooks');
+    else if(cannot)
+      toast(verb+acted+'; '+cannot+' unavailable');
+    else
+      toast(verb+acted+' notebook'+(acted===1?'':'s')+'…');
     hideNbsMenu();
   }
   function hideNbsMenu(){
@@ -7041,19 +7103,21 @@ _DECK_JS = r"""
     var h=document.createElement('div');h.className='dc-nbs-menuh';
     h.textContent='notebooks in this presentation';m.appendChild(h);
     info.forEach(function(n){
+      /* openable-but-closed = "avail"; can't be opened here = "gone" */
+      var cls=n.open?'open':(n.openable?'avail':'gone');
       var row=document.createElement('div');
-      row.className='dc-nbrow '+(n.open?'open':(n.path?'avail':'gone'));
+      row.className='dc-nbrow '+cls;
       var dot=document.createElement('span');dot.className='dc-nbrow-dot';
       var nm=document.createElement('span');nm.className='dc-nbrow-nm';
       nm.textContent=n.stem;
       var st=document.createElement('span');st.className='dc-nbrow-st';
-      st.textContent=n.open?'open':(n.path?'closed':'not found');
+      st.textContent=n.open?'open':(n.openable?'closed':'not found');
       row.appendChild(dot);row.appendChild(nm);row.appendChild(st);
-      if(n.path&&nbsCanOpen()){
+      if(n.openable&&!n.open){
         row.title=n.path;row.classList.add('clickable');
         row.addEventListener('click',function(){
           APP.openPath(n.path);hideNbsMenu();});
-      }
+      } else if(n.path){row.title=n.path;}
       m.appendChild(row);
     });
     if(nbsCanOpen()){
@@ -7202,8 +7266,17 @@ _DECK_JS = r"""
     if(pop&&!pop.hidden&&e.key==='Escape'){
       e.preventDefault();e.stopPropagation();closePlotTrace();}
   },true);
-  /* the docs side (a separate IIFE) opens the popup through this bridge */
-  window.SemTrace={open:function(stem,anchor){openPlotTrace(stem,anchor);}};
+  /* the docs side (a separate IIFE) drives the popup + the trace tab
+     through this bridge */
+  window.SemTrace={
+    open:function(stem,anchor){openPlotTrace(stem,anchor);},
+    buildPane:function(stem,anchor){
+      var it=traceItemFor(stem,anchor); if(!it) return null;
+      var wrap=document.createElement('div');wrap.className='tracepane-body';
+      fillTraceInto(wrap,it);
+      return {node:wrap,title:(it.title||'Plot trace')};
+    }
+  };
   /* ---- "Notebooks" popover in the deck header ---- */
   var nbsBtn=$('#dc-nbs-btn'),nbsMenu=$('#dc-nbs-menu');
   if(nbsBtn) nbsBtn.addEventListener('click',function(e){
@@ -8665,6 +8738,9 @@ def _self_test() -> None:
     assert 'class="plot-trace-btn"' in out and 'id="tracepop"' in out
     assert "function openPlotTrace" in out and "function plotGraph" in out
     assert "window.SemTrace" in out and ".pg-node" in out
+    # the trace can pop out into its own in-app tab
+    assert 'id="tracepop-tab"' in out and "function openTraceTab" in out
+    assert "buildPane" in out and ".nbshell.tracetab" in out
     # presentation "Notebooks" popover: open-all / refresh-all
     assert 'id="dc-nbs-btn"' in out and 'id="dc-nbs-menu"' in out
     assert "function renderNbsMenu" in out and "function openPresNbs" in out
