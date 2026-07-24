@@ -1347,7 +1347,8 @@ def render_item(item: Item) -> str:
     if item.node_id:
         id_tag = f'<span class="nodeid">{html.escape(item.node_id)}</span>'
 
-    # figures get a "Plot trace" button -> popup with the code lineage + graph
+    # figures get a "Plot trace" button -> opens a new tab: the docs view
+    # subset to this plot's lineage cells + a dependency graph
     trace_btn = ""
     if item.kind in ("figure", "diagnostic"):
         trace_btn = (
@@ -2144,12 +2145,13 @@ that declared an <code>#| id:</code>.</li>
 </ul>
 
 <h3>Plot trace</h3>
-<p>Every figure has a <b>&#9903; Plot trace</b> button. It focuses the
-document down to just the cells that build that plot &mdash; its whole
-lineage, load &rarr; transform &rarr; plot &mdash; and opens a
-dependency graph. It is the same document view, just subset, so every
-filter and button still works; <b>Show full document</b> (or Esc)
-brings everything back.</p>
+<p>Every figure has a <b>&#9903; Plot trace</b> button. It opens a new
+tab holding just the cells that build that plot &mdash; its whole
+lineage, load &rarr; transform &rarr; plot &mdash; with a dependency
+graph at the top. The tab is the same document view, just subset to
+those cells, so every filter and button still works exactly as it does
+in the full document. Close the tab (its <b>&times;</b>) when you are
+done; the original document is untouched.</p>
 
 <h3>Raw notebook</h3>
 <p><b>Raw notebook</b> flips the current tab to the notebook exactly as
@@ -2884,9 +2886,13 @@ _JS = r"""
   if(appEl){try{APP=JSON.parse(appEl.textContent);}catch(e){}}
   APP.project=APP.project||{presentations:[],recent:[]};
   APP.shells={};          /* stem -> {el, data, path, title} */
-  APP.order=[];           /* stems in tab order */
+  APP.order=[];           /* NOTEBOOK stems in tab order (deck/ref-facing) */
+  APP.traces=[];          /* Plot-trace tab keys — kept OUT of APP.order so
+                             the deck, refs + naming stay notebook-only */
   APP.active=null;
   window.SemApp=APP;
+  /* every tab shown in the strip: notebooks first, then their trace tabs */
+  function tabList(){return APP.order.concat(APP.traces);}
 
   function api(path,body){
     var url=path+(path.indexOf('?')<0?'?':'&')
@@ -2919,16 +2925,33 @@ _JS = r"""
   function renderTabs(){
     if(!tabstrip){refreshChrome();return;}
     tabstrip.innerHTML='';
-    APP.order.forEach(function(stem){
+    tabList().forEach(function(stem){
       var sh=APP.shells[stem];
       var t=document.createElement('div');
-      t.className='tab'+(stem===APP.active?' current':'');
+      t.className='tab'+(stem===APP.active?' current':'')
+        +(sh.trace?' tab-trace':'');
       t.setAttribute('role','tab');
-      t.title=sh.path||sh.title||stem;
+      t.title=sh.trace?('Plot trace — '+(sh.title||''))
+        :(sh.path||sh.title||stem);
       var lbl=document.createElement('span');lbl.className='tab-t';
-      lbl.textContent=stem;
+      if(sh.trace){
+        var ic=document.createElement('span');ic.className='tab-trace-ic';
+        ic.textContent='◈';   /* ◈ marks a trace tab */
+        t.appendChild(ic);
+        lbl.textContent=sh.title||'Plot trace';
+      } else {
+        lbl.textContent=stem;
+      }
       t.appendChild(lbl);
-      if(APP.mode==='app'||APP.mode==='web'){
+      /* a trace tab is always closeable (in every mode); notebook tabs get
+         reload+close only in the modes that can reopen them */
+      if(sh.trace){
+        var xc=document.createElement('button');xc.className='tab-b';
+        xc.innerHTML='&#10005;';xc.title='Close trace';
+        xc.addEventListener('click',function(e){e.stopPropagation();
+          closeNotebook(stem);});
+        t.appendChild(xc);
+      } else if(APP.mode==='app'||APP.mode==='web'){
         if(sh.path){
           var r=document.createElement('button');r.className='tab-b';
           r.innerHTML='&#8635;';
@@ -2952,7 +2975,7 @@ _JS = r"""
   function activate(stem){
     if(!APP.shells[stem]) return;
     APP.active=stem;
-    APP.order.forEach(function(s){APP.shells[s].el.hidden=(s!==stem);});
+    tabList().forEach(function(s){APP.shells[s].el.hidden=(s!==stem);});
     renderTabs();
     renderRawBtn();
     document.dispatchEvent(new CustomEvent('sem:activate',
@@ -2993,9 +3016,6 @@ _JS = r"""
   }
   function applyFilters(){
     $$('.nbshell').forEach(function(sh){
-      /* plot-trace focus: in the focused notebook, only the plot's lineage
-         cells stay — everything else is filtered out of the document view */
-      var inFocus=focusStem&&sh.dataset.nb===focusStem&&focusIds;
       $$('.card',sh).forEach(function(c){
         /* a per-cell eye can hide one cell regardless of the global filters */
         var off=c.classList.contains('cell-off');
@@ -3041,9 +3061,6 @@ _JS = r"""
           c.classList.remove('collapsed','expanded');   /* parts fold, not cards */
         }
         var id=c.id.replace(/^card-/,'');
-        /* a cell outside the focused plot's lineage drops out entirely */
-        var focusOut=inFocus&&!focusIds[id];
-        if(focusOut) filtGone=true;
         c.classList.toggle('is-hidden',filtGone||off);
         var nav=sh.querySelector('.navitem[data-item="'+id+'"]');
         if(nav){
@@ -3203,6 +3220,11 @@ _JS = r"""
   function renderRawBtn(){
     if(!rawBtn) return;
     var sh=APP.active&&APP.shells[APP.active];
+    if(sh&&sh.trace){   /* a Plot-trace tab has no raw notebook of its own */
+      rawBtn.textContent='Raw notebook';
+      rawBtn.setAttribute('aria-pressed','false');
+      rawBtn.disabled=true;return;
+    }
     var on=!!(sh&&sh.el.classList.contains('raw'));
     rawBtn.setAttribute('aria-pressed',on.toString());
     rawBtn.textContent=on?'Formatted view':'Raw notebook';
@@ -3329,8 +3351,9 @@ _JS = r"""
      text:'A key at the top, collapsible sections, and an eye beside every '
        +'cell to hide just that one (it stays here so you can bring it back).'},
     {sel:'.plot-trace-btn',title:'Trace a plot',
-     text:'Plot trace focuses the document down to the cells that build a '
-       +'plot — its whole lineage — plus a dependency graph.'},
+     text:'Plot trace opens a new tab with just the cells that build a '
+       +'plot — its whole lineage — plus a dependency graph. Every filter '
+       +'still works there.'},
     {sel:'#pr-docs,.presrail,#presrail',title:'Build presentations',
      text:'The left rail holds presentations. Lay out slides, drop in cards '
        +'from any open notebook, and present full screen.'},
@@ -3543,6 +3566,84 @@ _JS = r"""
     });
   }
   APP.mdscan=mdClampScan;
+  /* Per-card behaviours, shared by the docs shell and the Plot-trace tab so
+     the trace is a genuine subset of the docs with every control live.
+     (Nav/graph wiring stays in initShell — the trace tab has no sidebar.) */
+  function wireCardBehaviors(shell,stem){
+    /* ---- code toggles ---- */
+    $$('.codetoggle',shell).forEach(function(btn){
+      btn.addEventListener('click',function(){
+        var wrap=btn.closest('.codewrap');
+        var open=wrap.hasAttribute('data-open');
+        if(open){wrap.removeAttribute('data-open');
+          btn.setAttribute('aria-expanded','false');}
+        else{wrap.setAttribute('data-open','');
+          btn.setAttribute('aria-expanded','true');}
+      });
+    });
+    /* ---- per-cell eye: hide/show one cell (it stays in the sidebar) ---- */
+    function setCellOff(id,off){
+      var card=shell.querySelector('.card[id="card-'+id+'"]');
+      var nav=shell.querySelector('.navitem[data-item="'+id+'"]');
+      if(card) card.classList.toggle('cell-off',off);
+      if(nav) nav.classList.toggle('cell-off',off);
+      applyFilters();
+    }
+    $$('.cell-eye',shell).forEach(function(btn){
+      btn.addEventListener('click',function(e){
+        e.preventDefault();e.stopPropagation();
+        var card=btn.closest('.card'); if(!card) return;
+        setCellOff(card.id.replace(/^card-/,''),true);   /* hide this cell */
+      });
+    });
+    $$('.navitem-eye',shell).forEach(function(sp){
+      var toggle=function(e){
+        e.preventDefault();e.stopPropagation();
+        var nav=sp.closest('.navitem'); if(!nav) return;
+        setCellOff(nav.dataset.item,!nav.classList.contains('cell-off'));
+      };
+      sp.addEventListener('click',toggle);
+      /* role=button span: Enter/Space must act (keyboard users restore a
+         cell hidden via the card eye only through this control) */
+      sp.addEventListener('keydown',function(e){
+        if(e.key==='Enter'||e.key===' '||e.key==='Spacebar') toggle(e);
+      });
+    });
+    /* ---- figure "Plot trace" button -> the deck's trace tab ---- */
+    $$('.plot-trace-btn',shell).forEach(function(btn){
+      btn.addEventListener('click',function(e){
+        e.preventDefault();e.stopPropagation();
+        if(window.SemTrace) window.SemTrace.open(stem,btn.dataset.trace);
+      });
+    });
+    /* ---- "derives from" dep chip -> scroll to its source card (scoped to
+       this shell, so it works in the docs AND the trace tab's clones) ---- */
+    $$('.depchip',shell).forEach(function(a){
+      a.addEventListener('click',function(e){
+        e.preventDefault();
+        var src=$('.card[data-node="'+a.dataset.dep+'"]',shell);
+        if(src){src.scrollIntoView({behavior:'smooth',block:'center'});
+          src.classList.add('target-flash');
+          setTimeout(function(){src.classList.remove('target-flash');},1400);}
+      });
+    });
+    /* ---- a Collapsed markdown note opens when its header is clicked;
+       clicking again folds it back ---- */
+    $$('.card',shell).forEach(function(c){
+      var head=$('.cardhead',c);
+      if(head) head.addEventListener('click',function(e){
+        if(e.target.closest('button,a')) return;   /* leave eye/trace clicks */
+        if(c.classList.contains('collapsed')) c.classList.toggle('expanded');
+      });
+    });
+    /* ---- a figure folded by Plots = Collapsed opens on click ---- */
+    $$('.cb-fig',shell).forEach(function(f){
+      f.addEventListener('click',function(){
+        if(f.classList.contains('part-fold')) f.classList.toggle('part-open');
+      });
+    });
+  }
+  APP.wireCardBehaviors=wireCardBehaviors;
   function initShell(shell){
     var data={};
     var de=$('.nb-data',shell);
@@ -3642,18 +3743,6 @@ _JS = r"""
       });
     });
 
-    /* ---- code toggles ---- */
-    $$('.codetoggle',shell).forEach(function(btn){
-      btn.addEventListener('click',function(){
-        var wrap=btn.closest('.codewrap');
-        var open=wrap.hasAttribute('data-open');
-        if(open){wrap.removeAttribute('data-open');
-          btn.setAttribute('aria-expanded','false');}
-        else{wrap.setAttribute('data-open','');
-          btn.setAttribute('aria-expanded','true');}
-      });
-    });
-
     /* ---- graph node / dep chip -> scroll to card ---- */
     function gotoItem(itemId){
       var card=$('.card[id="card-'+itemId+'"]',shell);
@@ -3668,15 +3757,8 @@ _JS = r"""
       g.addEventListener('keydown',function(e){
         if(e.key==='Enter'||e.key===' '){e.preventDefault();act();}});
     });
-    $$('.depchip',shell).forEach(function(a){
-      a.addEventListener('click',function(e){
-        e.preventDefault();
-        var src=$('.card[data-node="'+a.dataset.dep+'"]',shell);
-        if(src){src.scrollIntoView({behavior:'smooth',block:'center'});
-          src.classList.add('target-flash');
-          setTimeout(function(){src.classList.remove('target-flash');},1400);}
-      });
-    });
+    /* .depchip lives inside a card -> wired in wireCardBehaviors so it also
+       works on the Plot-trace tab's cloned cards */
     var rgBtn=$('.rg-collapse',shell);
     if(rgBtn) rgBtn.addEventListener('click',function(){
       var rg=rgBtn.closest('.railgraph');
@@ -3696,56 +3778,10 @@ _JS = r"""
         chev.setAttribute('aria-expanded',(!col).toString());
       });
     });
-    /* ---- per-cell eye: hide/show one cell (it stays in the sidebar) ---- */
-    function setCellOff(id,off){
-      var card=shell.querySelector('.card[id="card-'+id+'"]');
-      var nav=shell.querySelector('.navitem[data-item="'+id+'"]');
-      if(card) card.classList.toggle('cell-off',off);
-      if(nav) nav.classList.toggle('cell-off',off);
-      applyFilters();
-    }
-    $$('.cell-eye',shell).forEach(function(btn){
-      btn.addEventListener('click',function(e){
-        e.preventDefault();e.stopPropagation();
-        var card=btn.closest('.card'); if(!card) return;
-        setCellOff(card.id.replace(/^card-/,''),true);   /* hide this cell */
-      });
-    });
-    $$('.navitem-eye',shell).forEach(function(sp){
-      var toggle=function(e){
-        e.preventDefault();e.stopPropagation();
-        var nav=sp.closest('.navitem'); if(!nav) return;
-        setCellOff(nav.dataset.item,!nav.classList.contains('cell-off'));
-      };
-      sp.addEventListener('click',toggle);
-      /* role=button span: Enter/Space must act (keyboard users restore a
-         cell hidden via the card eye only through this control) */
-      sp.addEventListener('keydown',function(e){
-        if(e.key==='Enter'||e.key===' '||e.key==='Spacebar') toggle(e);
-      });
-    });
-    /* ---- figure "Plot trace" button -> the deck's trace popup ---- */
-    $$('.plot-trace-btn',shell).forEach(function(btn){
-      btn.addEventListener('click',function(e){
-        e.preventDefault();e.stopPropagation();
-        if(window.SemTrace) window.SemTrace.open(stem,btn.dataset.trace);
-      });
-    });
-    /* ---- a Collapsed markdown note opens when its header is clicked;
-       clicking again folds it back ---- */
-    $$('.card',shell).forEach(function(c){
-      var head=$('.cardhead',c);
-      if(head) head.addEventListener('click',function(e){
-        if(e.target.closest('button,a')) return;   /* leave eye/trace clicks */
-        if(c.classList.contains('collapsed')) c.classList.toggle('expanded');
-      });
-    });
-    /* ---- a figure folded by Plots = Collapsed opens on click ---- */
-    $$('.cb-fig',shell).forEach(function(f){
-      f.addEventListener('click',function(){
-        if(f.classList.contains('part-fold')) f.classList.toggle('part-open');
-      });
-    });
+    /* ---- per-card behaviours (code toggle, eyes, collapse, fig-fold):
+       shared with the Plot-trace tab so the trace is a true subset of the
+       docs, with every button and filter live ---- */
+    wireCardBehaviors(shell,stem);
 
     /* ---- register ---- */
     var replaced=!!APP.shells[stem];
@@ -3770,6 +3806,11 @@ _JS = r"""
     if(path) shell.dataset.path=path;
     var stem=shell.dataset.nb;
     var old=APP.shells[stem];
+    /* a reload replaces the notebook's cards — its Plot-trace tabs now hold
+       stale clones, so close them (a fresh trace re-clones the new cards) */
+    if(old) APP.traces.slice().forEach(function(k){
+      if(APP.shells[k]&&APP.shells[k].source===stem) closeNotebook(k);
+    });
     if(old&&old.el.parentNode) host.replaceChild(shell,old.el);
     else host.appendChild(shell);
     initShell(shell);
@@ -3778,50 +3819,86 @@ _JS = r"""
     if(window.MathJax&&MathJax.typesetPromise)
       MathJax.typesetPromise([shell]).catch(function(){});
   }
-  /* ---- "plot trace" = FOCUS the document on one plot's lineage cells ----
-     it is the same docs view (all filters + buttons live) with every
-     unrelated cell hidden, plus a banner + the dependency graph. */
-  var focusStem=null,focusIds=null;
-  function focusTrace(stem,ids,title,graph){
-    focusStem=stem;focusIds={};
-    (ids||[]).forEach(function(i){focusIds[i]=1;});
-    if(APP.shells[stem]) activate(stem);
-    var bar=$('#focusbar'),tt=$('#focusbar-t'),gw=$('#focusbar-graph-wrap'),
-        gb=$('#focusbar-graph');
-    if(tt) tt.textContent=title||'Plot trace';
-    if(gw){gw.innerHTML='';if(graph){gw.appendChild(graph);}gw.hidden=true;}
-    if(gb) gb.hidden=!graph;
-    if(bar) bar.hidden=false;
-    applyFilters();
-    var sh=APP.shells[stem];
-    if(sh&&sh.el){var c=sh.el.querySelector('.content');
-      if(c) c.scrollTop=0;}
-    window.scrollTo(0,0);
-  }
-  function clearFocus(){
-    focusStem=null;focusIds=null;
-    var bar=$('#focusbar'); if(bar) bar.hidden=true;
-    applyFilters();
-  }
-  function focusGoto(itemId){
-    var sh=focusStem&&APP.shells[focusStem]; if(!sh) return;
+  /* ---- "Plot trace" opens in its OWN TAB: a genuine subset of the docs
+     holding just this plot's lineage cells + the dependency graph. The tab
+     is a real .nbshell, so every global filter and per-card control works
+     inside it exactly as it does in the full document. ---- */
+  function traceGoto(itemId){
+    /* the graph lives inside the active trace tab — scroll to a step there */
+    var sh=APP.active&&APP.shells[APP.active];
+    if(!sh||!sh.el) return;
     var card=sh.el.querySelector('.card[id="card-'+itemId+'"]');
     if(card){card.scrollIntoView({block:'center'});
       card.classList.add('target-flash');
       setTimeout(function(){card.classList.remove('target-flash');},1200);}
   }
-  APP.focusTrace=focusTrace;APP.clearFocus=clearFocus;APP.focusGoto=focusGoto;
-  var fbClear=$('#focusbar-clear');
-  if(fbClear) fbClear.addEventListener('click',clearFocus);
-  var fbGraph=$('#focusbar-graph'),fbGw=$('#focusbar-graph-wrap');
-  if(fbGraph) fbGraph.addEventListener('click',function(){
-    if(!fbGw) return;
-    fbGw.hidden=!fbGw.hidden;
-    fbGraph.setAttribute('aria-expanded',(!fbGw.hidden).toString());
-  });
-  document.addEventListener('keydown',function(e){
-    if(e.key==='Escape'&&focusStem&&!e.defaultPrevented) clearFocus();
-  });
+  APP.traceGoto=traceGoto;
+  function openTraceTab(stem,ids,title,graph,anchor){
+    var src=APP.shells[stem];
+    if(!src||!src.el) return;
+    var key='trace::'+stem+'::'
+      +(anchor||(ids&&ids.length&&ids[ids.length-1])||title||'plot');
+    if(APP.shells[key]){          /* already open — just bring it forward */
+      activate(key);return key;
+    }
+    /* clone the lineage cards in DOCUMENT order (a true subset of the docs) */
+    var want={};(ids||[]).forEach(function(i){want[i]=1;});
+    var section=document.createElement('section');
+    section.className='section';
+    $$('.content .card',src.el).forEach(function(card){
+      var id=card.id.replace(/^card-/,'');
+      if(want[id]) section.appendChild(card.cloneNode(true));
+    });
+    if(!section.children.length){        /* nothing matched: show the plot */
+      var only=src.el.querySelector('.content .card');
+      if(only) section.appendChild(only.cloneNode(true));
+    }
+    /* the trace tab has no sidebar, so a per-cell eye could hide a lineage
+       cell with no way to bring it back — drop the eye, start all visible */
+    $$('.cell-eye',section).forEach(function(b){
+      if(b.parentNode) b.parentNode.removeChild(b);});
+    $$('.card.cell-off',section).forEach(function(c){
+      c.classList.remove('cell-off');});
+    /* cards default to opacity:0 and are revealed by initShell's scroll
+       observer; the trace tab is a deliberate, fully-shown subset and has no
+       such observer, so force every clone visible up front */
+    $$('.card',section).forEach(function(c){c.classList.add('in');});
+    var shell=document.createElement('div');
+    shell.className='shell nbshell tracetab';
+    shell.dataset.nb=key;
+    shell.dataset.src=stem;   /* the real notebook a placed clone resolves to */
+    var stage=document.createElement('main');stage.className='stage';
+    var content=document.createElement('div');content.className='content';
+    var head=document.createElement('div');head.className='tracetab-head';
+    var eb=document.createElement('span');eb.className='tracetab-eyebrow';
+    eb.textContent='plot trace';
+    var h=document.createElement('h2');h.className='tracetab-t';
+    h.textContent=title||'Plot trace';
+    var sub=document.createElement('span');sub.className='tracetab-sub';
+    sub.textContent='the cells that build this plot, from '+stem;
+    head.appendChild(eb);head.appendChild(h);head.appendChild(sub);
+    content.appendChild(head);
+    if(graph){var gw=document.createElement('div');
+      gw.className='tracetab-graph';gw.appendChild(graph);
+      content.appendChild(gw);}
+    content.appendChild(section);
+    stage.appendChild(content);
+    shell.appendChild(stage);
+    var host=$('#docs')||document.body;
+    host.appendChild(shell);
+    /* wire the clones so their code toggles, eyes, collapse + fig-fold work */
+    wireCardBehaviors(shell,stem);
+    APP.shells[key]={el:shell,data:{},path:'',title:title||'Plot trace',
+      trace:true,source:stem};
+    if(APP.traces.indexOf(key)<0) APP.traces.push(key);
+    activate(key);
+    applyFilters();
+    applyCodeState(shell);   /* fold/hide code to match the current state */
+    var c=shell.querySelector('.content'); if(c) c.scrollTop=0;
+    window.scrollTo(0,0);
+    return key;
+  }
+  APP.openTraceTab=openTraceTab;
   /* one open per source at a time: repeated Enter/clicks are ignored
      while the fetch runs, and the dialog shows a loading bar */
   var OPENBUSY={},dlgBusyN=0;
@@ -3853,17 +3930,25 @@ _JS = r"""
   APP.openPath=openPath;
   function closeNotebook(stem){
     var sh=APP.shells[stem]; if(!sh) return;
+    /* closing a notebook also closes any Plot-trace tabs derived from it */
+    if(!sh.trace) APP.traces.slice().forEach(function(k){
+      if(APP.shells[k]&&APP.shells[k].source===stem) closeNotebook(k);
+    });
     if(sh.el.parentNode) sh.el.parentNode.removeChild(sh.el);
     delete APP.shells[stem];
-    var i=APP.order.indexOf(stem);
-    if(i>=0) APP.order.splice(i,1);
+    var list=sh.trace?APP.traces:APP.order;
+    var i=list.indexOf(stem);
+    if(i>=0) list.splice(i,1);
     if(APP.active===stem){
       APP.active=null;
-      if(APP.order.length)
-        activate(APP.order[Math.min(Math.max(i,0),APP.order.length-1)]);
-      else renderRawBtn();
+      /* closing a trace tab returns to its source notebook; otherwise fall
+         back to the last remaining notebook (or trace) tab */
+      var back=(sh.trace&&APP.shells[sh.source])?sh.source
+        :(APP.order[APP.order.length-1]||APP.traces[APP.traces.length-1]);
+      if(back) activate(back); else renderRawBtn();
     }
     renderTabs();
+    if(sh.trace) return;   /* a trace tab is not a notebook — no teardown */
     document.dispatchEvent(new CustomEvent('sem:shellclosed',
       {detail:{stem:stem}}));
     if(APP.mode==='app'&&sh.path)
@@ -4395,19 +4480,6 @@ _DECK_HTML = """
   </div>
   <div class="deck-toast" id="deck-toast" hidden></div>
 </div>
-<div class="focusbar" id="focusbar" hidden>
-  <div class="focusbar-row">
-    <span class="focusbar-eyebrow">plot trace</span>
-    <span class="focusbar-t" id="focusbar-t"></span>
-    <span class="dc-spring"></span>
-    <button class="focusbar-btn" id="focusbar-graph" hidden
-      aria-expanded="false" title="Show the dependency graph for this plot">
-      &#9903; Graph</button>
-    <button class="focusbar-btn primary" id="focusbar-clear"
-      title="Return to the full document">&#10005; Show full document</button>
-  </div>
-  <div class="focusbar-graph-wrap" id="focusbar-graph-wrap" hidden></div>
-</div>
 <div class="pickbar" id="pickbar" hidden>
   <span>&#128204; Click a card in the notebook to place it in the
   slide</span>
@@ -4619,30 +4691,29 @@ body.deck-open{overflow:hidden;}
 body:not(.light) .plot-trace-btn{background:#0e1824;color:#8ba0b2;
   border-color:#ffffff1f;}
 body:not(.light) .plot-trace-btn:hover{color:#5fc3d8;border-color:#39a9c066;}
-/* ---- plot-trace FOCUS bar: a floating pill; the document itself is subset
-   to the plot's lineage cells, so all its filters + buttons stay live ---- */
-.focusbar{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);
-  z-index:120;max-width:calc(100vw - 36px);}
-.focusbar[hidden]{display:none;}
-.focusbar-row{display:flex;align-items:center;gap:11px;background:#0b141d;
-  border:1px solid #ffffff26;border-radius:24px;padding:8px 9px 8px 18px;
-  box-shadow:0 12px 38px #0009;}
-.focusbar-eyebrow{font-family:var(--mono);font-size:9px;letter-spacing:.2em;
-  text-transform:uppercase;color:#5fc3d8;flex:none;}
-.focusbar-t{font-size:13.5px;font-weight:600;color:#eef4f8;min-width:0;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:36vw;}
-.focusbar-btn{flex:none;font-family:var(--sans);font-size:12px;
-  border:1px solid #ffffff22;background:#ffffff0d;color:#dce6ee;
-  border-radius:18px;padding:5px 13px;cursor:pointer;white-space:nowrap;}
-.focusbar-btn:hover{background:#ffffff18;}
-.focusbar-btn.primary{background:#39a9c022;border-color:#39a9c066;color:#bfeaf5;}
-.focusbar-btn.primary:hover{background:#39a9c033;}
-.focusbar-graph-wrap{position:absolute;left:0;bottom:calc(100% + 10px);
-  background:#0b141d;border:1px solid #ffffff22;border-radius:12px;padding:12px;
-  box-shadow:0 12px 40px #0009;max-height:60vh;overflow:auto;
-  width:min(720px,90vw);}
-.focusbar-graph-wrap[hidden]{display:none;}
-.focusbar-graph-wrap .plotgraph-wrap{margin:0;}
+/* ---- Plot-trace TAB: a real notebook shell holding just this plot's
+   lineage cells, so every global filter + per-card control works inside it.
+   No sidebar — the content spans the full width. ---- */
+/* :not([hidden]) both raises specificity above .nbshell[hidden]{display:none}
+   AND stops matching once activate() hides the tab, so switching tabs works */
+.nbshell.tracetab:not([hidden]){display:block;}
+.nbshell.tracetab .stage{width:100%;}
+.tracetab-head{margin:0 0 14px;padding-bottom:12px;
+  border-bottom:1px solid #ffffff14;}
+.tracetab-eyebrow{display:block;font-family:var(--mono);font-size:10px;
+  letter-spacing:.22em;text-transform:uppercase;color:#5fc3d8;}
+.tracetab-t{margin:5px 0 2px;font-size:22px;font-weight:650;color:#eef4f8;
+  line-height:1.2;}
+.tracetab-sub{font-size:12.5px;color:#8fa6b4;}
+.tracetab-graph{margin:0 0 18px;}
+.tracetab-graph .plotgraph-wrap{margin:0;}
+body.light .tracetab-head{border-color:#0000000f;}
+body.light .tracetab-t{color:#122029;}
+body.light .tracetab-sub{color:#5a6b76;}
+/* the ◈ badge + tint that marks a Plot-trace tab in the tab strip */
+.tab.tab-trace{border-color:#39a9c055;}
+.tab-trace-ic{color:#5fc3d8;margin-right:5px;font-size:11px;flex:none;}
+.tab.tab-trace.current{background:#39a9c018;}
 /* per-plot dependency graph */
 .plotgraph-wrap{margin:0 0 18px;padding:12px 12px 6px;
   background:#0e1824;border:1px solid #ffffff12;border-radius:10px;}
@@ -5599,8 +5670,8 @@ _DECK_JS = r"""
     if(i>=0) s.hidden.splice(i,1); else s.hidden.push(ns);
     markDirty();
   }
-  /* ---- reusable code trace (shared by the presentation AND the docs
-     "view plot trace" popup, so they always look + behave identically) ----
+  /* ---- reusable code trace used by the presentation's slide code-trail
+     (the docs "Plot trace" instead opens a tab of cloned docs cards) ----
      spec = { groups:[{it,steps,color}], list:()=>[ns hidden],
               toggle:(ns)=>void (persist), showHiddenRef:{v:bool} } */
   function renderTrace(spec){
@@ -6695,7 +6766,9 @@ _DECK_JS = r"""
     if(!card) return;
     if(t.closest('.codetoggle,.depchip,a')) return;
     e.preventDefault();e.stopPropagation();
-    endPick(nsKey(shellEl.dataset.nb,card.dataset.anchor));
+    /* a Plot-trace tab's cards are clones — resolve to the real notebook */
+    endPick(nsKey(shellEl.dataset.src||shellEl.dataset.nb,
+      card.dataset.anchor));
   },true);
 
   /* ---------- format bar wiring ---------- */
@@ -7601,23 +7674,25 @@ _DECK_JS = r"""
   if(upBtn) upBtn.addEventListener('click',scrollToSlide);
   var vfClose=$('#vfull-close');
   if(vfClose) vfClose.addEventListener('click',closeVFull);
-  /* ---- "view plot trace" is just the DOCS view, subset to the cells that
-     build this plot. The deck (which owns the lineage) hands the cell ids +
-     a dependency graph to the docs side, which focuses on them — every
-     document filter and button keeps working because it IS the document. ---- */
+  /* ---- "Plot trace" opens a new DOCS tab, subset to the cells that build
+     this plot. The deck (which owns the lineage) hands the cell ids + a
+     dependency graph to the docs side, which clones those cards into a tab —
+     every document filter and button keeps working because the tab IS made
+     of real document cards. ---- */
   window.SemTrace={
     open:function(stem,anchor){
       var it=traceItemFor(stem,anchor); if(!it) return;
-      if(!(window.SemApp&&window.SemApp.focusTrace)) return;
+      if(!(window.SemApp&&window.SemApp.openTraceTab)) return;
       var group=lineageForItem(it.ns);
       var ids={},list=[];
       if(group) group.steps.forEach(function(s){
         if(s.card&&!ids[s.card]){ids[s.card]=1;list.push(s.card);}});
       if(it.card&&!ids[it.card]) list.push(it.card);   /* the plot itself */
       var graph=group?plotGraph(group,function(step){
-        if(window.SemApp.focusGoto) window.SemApp.focusGoto(step.card);
+        if(window.SemApp.traceGoto) window.SemApp.traceGoto(step.card);
       }):null;
-      window.SemApp.focusTrace(it.nb,list,it.title||'Plot trace',graph);
+      window.SemApp.openTraceTab(
+        it.nb,list,it.title||'Plot trace',graph,anchor);
     }
   };
   /* close any open code-trail filter menu on an outside click */
@@ -7714,7 +7789,9 @@ _DECK_JS = r"""
       toast('This is a title slide — pick a layout to add card frames');
       return;
     }
-    var ref=nsKey(shellEl.dataset.nb,card.dataset.anchor);
+    /* a Plot-trace tab's cards are clones — resolve to the real notebook */
+    var ref=nsKey(shellEl.dataset.src||shellEl.dataset.nb,
+      card.dataset.anchor);
     if(slideCells(s).some(function(c){return c.a.ref===ref;})){
       e.preventDefault();e.stopPropagation();
       toast('That card is already on this slide');
@@ -9138,13 +9215,21 @@ def _self_test() -> None:
     # the code trace is one reusable component (presentation + docs popup)
     assert "vo-eye" in out and "function renderTrace" in out
     assert "function traceNode" in out and "function lineageForItem" in out
-    # docs "view plot trace" = FOCUS the document on the plot's lineage cells
-    # (the same docs view, subset — no bespoke widget), with a graph + banner
-    assert 'class="plot-trace-btn"' in out and 'id="focusbar"' in out
-    assert "function focusTrace" in out and "function plotGraph" in out
+    # docs "view plot trace" opens a NEW TAB: the docs view subset to the
+    # plot's lineage cells (a real .nbshell, all filters live) + a graph
+    assert 'class="plot-trace-btn"' in out and "function openTraceTab" in out
+    assert "function plotGraph" in out and ".nbshell.tracetab" in out
     assert "window.SemTrace" in out and ".pg-node" in out
-    assert 'id="focusbar-clear"' in out and "APP.focusTrace" in out
-    assert "var focusStem" in out   # the focus set drives applyFilters
+    assert "APP.openTraceTab" in out and "APP.traceGoto" in out
+    # an inactive trace tab must still hide: the display rule is scoped so it
+    # never overrides .nbshell[hidden]{display:none}
+    assert ".nbshell.tracetab:not([hidden]){display:block" in out
+    # a placed clone resolves to its source notebook (dataset.src)
+    assert "shell.dataset.src=stem" in out
+    # the trace tab shares the docs per-card wiring (true subset, not a widget)
+    assert "function wireCardBehaviors" in out and "APP.wireCardBehaviors" in out
+    # the retired focus-mode machinery is gone
+    assert "focusStem" not in out and 'id="focusbar"' not in out
     # the presentation code-trail has its OWN Code-types / Output-types filters
     assert "function traceFilterDropdown" in out and ".vo-step.vo-filtered" in out
     assert "var traceCkHidden" in out and "function applyTraceFilter" in out

@@ -1427,7 +1427,11 @@ def render_nav(doc: Document) -> str:
             f'<a class="navsec" href="#sec-{s.section_id}" '
             f'data-sec="{s.section_id}">'
             f'<span class="navsec-t">{html.escape(s.title)}</span>'
-            f'<span class="navsec-c">{figs or ""}</span></a></div>')
+            f'<span class="navsec-c">{figs or ""}</span></a>'
+            f'<span class="navsec-eye" role="button" tabindex="0" '
+            f'title="Hide or show this whole section" '
+            f'aria-label="Hide or show this whole section">&#128065;</span>'
+            f'</div>')
         parts.append(f'<div class="navitems" data-sec="{s.section_id}">')
         last_sub = None
         for it in s.items:
@@ -1457,12 +1461,20 @@ def render_sections(doc: Document) -> str:
     sections_html: list[str] = []
     for s in doc.sections:
         cards = "".join(render_item(it) for it in s.items)
+        sid = s.section_id
         sections_html.append(
-            f'<section class="section" id="sec-{s.section_id}" '
-            f'data-sec="{s.section_id}">'
+            f'<section class="section" id="sec-{sid}" data-sec="{sid}">'
             f'<div class="sectionhead sectionhead-l{s.level}">'
+            f'<button class="sec-chev" data-sec="{sid}" aria-expanded="true" '
+            f'title="Collapse / expand this section">&#9662;</button>'
+            f'<div class="sectionhead-txt">'
             f'<span class="eyebrow">section</span>'
-            f'<h2>{html.escape(s.title)}</h2></div>{cards}</section>')
+            f'<h2>{html.escape(s.title)}</h2></div>'
+            f'<span class="sec-spring"></span>'
+            f'<button class="sec-eye" data-sec="{sid}" '
+            f'title="Hide this whole section (restore it from the sidebar)" '
+            f'aria-label="Hide this whole section">&#128065;</button>'
+            f'</div>{cards}</section>')
     return "".join(sections_html)
 
 
@@ -1811,7 +1823,9 @@ body:not(.light) .docbar-p{color:#8ba0b2;}
 .content{max-width:920px;margin:0 auto;padding:30px 28px 30vh;}
 .section{margin-bottom:14px;scroll-margin-top:70px;}
 .sectionhead{padding:24px 0 6px;margin-bottom:8px;
-  border-bottom:1px solid var(--line);}
+  border-bottom:1px solid var(--line);
+  display:flex;align-items:center;gap:8px;}
+.sectionhead-txt{flex:1;min-width:0;}
 .sectionhead-l2 h2{font-size:21px;}
 .sectionhead-l2{padding-top:16px;}
 .eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.2em;
@@ -1819,6 +1833,34 @@ body:not(.light) .docbar-p{color:#8ba0b2;}
   margin-bottom:6px;}
 .sectionhead h2{font-size:26px;font-weight:600;margin:0;letter-spacing:-.02em;
   color:var(--ink);}
+/* main-view section controls: a collapse chevron (left) + a hide eye (right,
+   on hover) — the sidebar has the same two, kept in sync */
+.sec-chev{flex:none;background:none;border:none;color:var(--ink-3);
+  cursor:pointer;font-size:13px;line-height:1;padding:4px 4px;
+  border-radius:4px;transition:transform .15s,color .15s;}
+.sec-chev:hover{color:var(--ink);}
+.section.sec-collapsed .sec-chev{transform:rotate(-90deg);}
+.sec-spring{flex:1;}
+.sec-eye{flex:none;background:none;border:none;color:var(--ink-3);
+  cursor:pointer;font-size:14px;line-height:1;padding:3px 6px;
+  border-radius:5px;opacity:0;transition:opacity .12s,background .12s;}
+.sectionhead:hover .sec-eye,.sec-eye:focus-visible{opacity:.5;}
+.sec-eye:hover{opacity:1;background:var(--paper-2);}
+/* collapsed folds the section's cards away; the header stays clickable */
+.section.sec-collapsed .card{display:none;}
+.section.sec-collapsed .sectionhead{margin-bottom:0;}
+/* hidden drops the whole section from the document (restore from the sidebar) */
+.section.sec-off{display:none;}
+.navsec-row.sec-off{opacity:.5;}
+.navsec-eye{flex:none;font-size:11px;line-height:1;padding:1px 4px;
+  border-radius:4px;position:relative;opacity:0;color:inherit;cursor:pointer;
+  transition:opacity .12s,background .12s;}
+.navsec-row:hover .navsec-eye,.navsec-eye:focus{opacity:.6;}
+.navsec-eye:hover{opacity:1;background:#ffffff14;}
+.navsec-row.sec-off .navsec-eye{opacity:.9;}
+.navsec-row.sec-off .navsec-eye::after{content:"";position:absolute;
+  left:3px;right:3px;top:calc(50% - 1px);height:1.5px;background:currentColor;
+  transform:rotate(-18deg);border-radius:2px;}
 
 /* ---------- cards ---------- */
 .card{background:var(--paper);border:1px solid var(--line);
@@ -2111,11 +2153,15 @@ re-reads it after you re-run it in Jupyter, <b>&#10005;</b> closes.</li>
 </ul>
 
 <h3>Filtering what you see</h3>
-<p>Four buttons in the top bar &mdash; <b>Markdown</b>, <b>Code</b>,
-<b>Plots</b>, <b>Output</b> &mdash; each shows its CURRENT state and
-cycles when clicked. They apply to every tab at once.</p>
+<p>Four buttons in the top bar &mdash; <b>Plots</b>, <b>Markdown</b>,
+<b>Code</b>, <b>Output</b> &mdash; each shows its CURRENT state and
+cycles when clicked. They apply to every tab at once. A thin divider
+sets them apart from the view controls (Raw notebook, theme) on the
+right. <b>Plots</b> comes first because a figure is the headline of a
+cell; everything else a notebook produces is, loosely, its
+<i>output</i>.</p>
 <ul>
-<li><b>Markdown</b>, <b>Code</b> and <b>Plots</b> cycle
+<li><b>Plots</b>, <b>Markdown</b> and <b>Code</b> cycle
 <i>Visible &rarr; Collapsed &rarr; Hidden</i>. <i>Collapsed</i> folds
 that part away behind a click-to-open toggle; <i>Hidden</i> removes it.
 <b>Output</b> (printed tables, values, text) is a simple
@@ -2135,8 +2181,11 @@ code.</li>
 <h3>The sidebar</h3>
 <ul>
 <li>A <b>key</b> at the top names every card type present; below it,
-sections you can collapse with their chevron, and a jump-to link for
-every cell.</li>
+sections and a jump-to link for every cell.</li>
+<li><b>Collapse or hide a whole section</b> from its chevron and eye
+&mdash; in the sidebar <i>or</i> on the section heading in the document
+itself; the two stay in sync. A hidden section leaves the document but
+keeps its (dimmed) sidebar row so you can bring it back.</li>
 <li>The <b>eye</b> beside any cell &mdash; in the sidebar or on the card
 itself &mdash; hides just that one cell; a cell hidden this way stays in
 the sidebar (dimmed) so its eye can bring it back.</li>
@@ -2255,10 +2304,15 @@ body.presrail-min{--presrail-w:46px;}
 /* buttons keep one line and one uniform size no matter how narrow the
    bar gets (the builder can squeeze it) or what glyph they hold — the
    bar scrolls instead, and a fixed height stops content stretching */
-.appbar .toggle,.appbar .appbar-link,.appbar .tab-openbtn{
+.appbar .toggle,.appbar .appbar-link{
   flex:none;white-space:nowrap;height:30px;box-sizing:border-box;
   padding-top:0;padding-bottom:0;line-height:1;}
 .appbar-spring{flex:1;}
+/* a thin rule that marks where the content FILTERS end and the view/theme
+   controls begin */
+.appbar-div{flex:none;width:1px;height:20px;background:#ffffff26;
+  margin:0 5px;border-radius:1px;}
+body.light .appbar-div{background:#00000022;}
 /* dark variants of the show/hide toggles */
 .appbar .toggle{border-color:#ffffff22;background:#ffffff0a;color:#cdd9e3;}
 .appbar-link{text-decoration:none;display:inline-flex;
@@ -2276,11 +2330,18 @@ body.presrail-min{--presrail-w:46px;}
 .appbar .menubtn span::after{position:absolute;top:5px;}
 .appbar .menubtn[aria-pressed="true"]{background:#39a9c022;
   border-color:#39a9c088;}
-.tab-openbtn{font-family:var(--mono);font-size:11px;background:none;
-  border:1px solid #ffffff22;border-radius:var(--rad);color:var(--cyan);
-  padding:7px 14px;cursor:pointer;white-space:nowrap;flex:none;}
-.tab-openbtn:hover{background:#39a9c01a;border-color:var(--cyan);}
-.tab-openbtn[hidden]{display:none;}
+/* Open lives on the tab line now (a prominent + at the start), so it reads
+   as "add a document tab" rather than getting lost among the filter toggles */
+.tabrow-open{font-family:var(--mono);font-size:11px;letter-spacing:.04em;
+  font-weight:600;display:inline-flex;align-items:center;flex:none;
+  margin:7px 4px 0 10px;padding:0 14px;height:29px;cursor:pointer;
+  white-space:nowrap;border:1px solid var(--cyan);border-radius:8px;
+  background:#39a9c026;color:#bfeaf5;}
+.tabrow-open:hover{background:#39a9c03d;color:#fff;}
+.tabrow-open[hidden]{display:none;}
+body.light .tabrow-open{background:#39a9c01c;color:#0b6b7e;
+  border-color:#39a9c0aa;}
+body.light .tabrow-open:hover{background:#39a9c033;color:#084b58;}
 
 .tabsrow{display:flex;align-items:stretch;height:var(--tabsrow-h);
   background:#0d1a26;}
@@ -2637,8 +2698,6 @@ body.light .appbar .menubtn{border-color:var(--line);}
 body.light .appbar .menubtn span,
 body.light .appbar .menubtn span::before,
 body.light .appbar .menubtn span::after{background:var(--ink-2);}
-body.light .tab-openbtn{border-color:var(--line);
-  color:var(--cyan-deep);}
 body.light .tabsrow{background:#e9eef3;}
 body.light .tab{border-color:var(--line);background:#00000006;
   color:var(--ink-3);}
@@ -2922,53 +2981,72 @@ _JS = r"""
     if(demo) demo.hidden=(APP.mode!=='web');
     renderRecent();
   }
+  function makeTab(stem){
+    var sh=APP.shells[stem]; if(!sh) return null;
+    var t=document.createElement('div');
+    t.className='tab'+(stem===APP.active?' current':'')
+      +(sh.trace?' tab-trace tab-sub':'');
+    t.setAttribute('role','tab');
+    t.title=sh.trace?('Plot trace — '+(sh.title||'')
+        +'  ·  a sub-tab of '+(sh.source||''))
+      :(sh.path||sh.title||stem);
+    var lbl=document.createElement('span');lbl.className='tab-t';
+    if(sh.trace){
+      /* the ↳ hook reads as "nested under the tab before me" */
+      var ic=document.createElement('span');ic.className='tab-trace-ic';
+      ic.textContent='↳';
+      t.appendChild(ic);
+      lbl.textContent=sh.title||'Plot trace';
+    } else {
+      lbl.textContent=stem;
+    }
+    t.appendChild(lbl);
+    /* a trace sub-tab is always closeable (in every mode); notebook tabs get
+       reload+close only in the modes that can reopen them */
+    if(sh.trace){
+      var xc=document.createElement('button');xc.className='tab-b';
+      xc.innerHTML='&#10005;';xc.title='Close trace';
+      xc.addEventListener('click',function(e){e.stopPropagation();
+        closeNotebook(stem);});
+      t.appendChild(xc);
+    } else if(APP.mode==='app'||APP.mode==='web'){
+      if(sh.path){
+        var r=document.createElement('button');r.className='tab-b';
+        r.innerHTML='&#8635;';
+        r.title=/^https?:/.test(sh.path)
+          ?'Reload from URL':'Reload from disk';
+        r.addEventListener('click',function(e){e.stopPropagation();
+          openPath(sh.path);});
+        t.appendChild(r);
+      }
+      var x=document.createElement('button');x.className='tab-b';
+      x.innerHTML='&#10005;';x.title='Close tab';
+      x.addEventListener('click',function(e){e.stopPropagation();
+        closeNotebook(stem);});
+      t.appendChild(x);
+    }
+    t.addEventListener('click',function(){activate(stem);});
+    return t;
+  }
   function renderTabs(){
     if(!tabstrip){refreshChrome();return;}
     tabstrip.innerHTML='';
-    tabList().forEach(function(stem){
-      var sh=APP.shells[stem];
-      var t=document.createElement('div');
-      t.className='tab'+(stem===APP.active?' current':'')
-        +(sh.trace?' tab-trace':'');
-      t.setAttribute('role','tab');
-      t.title=sh.trace?('Plot trace — '+(sh.title||''))
-        :(sh.path||sh.title||stem);
-      var lbl=document.createElement('span');lbl.className='tab-t';
-      if(sh.trace){
-        var ic=document.createElement('span');ic.className='tab-trace-ic';
-        ic.textContent='◈';   /* ◈ marks a trace tab */
-        t.appendChild(ic);
-        lbl.textContent=sh.title||'Plot trace';
-      } else {
-        lbl.textContent=stem;
-      }
-      t.appendChild(lbl);
-      /* a trace tab is always closeable (in every mode); notebook tabs get
-         reload+close only in the modes that can reopen them */
-      if(sh.trace){
-        var xc=document.createElement('button');xc.className='tab-b';
-        xc.innerHTML='&#10005;';xc.title='Close trace';
-        xc.addEventListener('click',function(e){e.stopPropagation();
-          closeNotebook(stem);});
-        t.appendChild(xc);
-      } else if(APP.mode==='app'||APP.mode==='web'){
-        if(sh.path){
-          var r=document.createElement('button');r.className='tab-b';
-          r.innerHTML='&#8635;';
-          r.title=/^https?:/.test(sh.path)
-            ?'Reload from URL':'Reload from disk';
-          r.addEventListener('click',function(e){e.stopPropagation();
-            openPath(sh.path);});
-          t.appendChild(r);
+    /* each notebook is followed inline by its own Plot-trace sub-tabs, so a
+       trace reads as a child of the notebook it was opened from */
+    APP.order.forEach(function(stem){
+      var nb=makeTab(stem); if(nb) tabstrip.appendChild(nb);
+      APP.traces.forEach(function(k){
+        if(APP.shells[k]&&APP.shells[k].source===stem){
+          var st=makeTab(k); if(st) tabstrip.appendChild(st);
         }
-        var x=document.createElement('button');x.className='tab-b';
-        x.innerHTML='&#10005;';x.title='Close tab';
-        x.addEventListener('click',function(e){e.stopPropagation();
-          closeNotebook(stem);});
-        t.appendChild(x);
+      });
+    });
+    /* defensive: a trace whose source is gone still gets a tab (at the end) */
+    APP.traces.forEach(function(k){
+      var sh=APP.shells[k];
+      if(sh&&APP.order.indexOf(sh.source)<0){
+        var st=makeTab(k); if(st) tabstrip.appendChild(st);
       }
-      t.addEventListener('click',function(){activate(stem);});
-      tabstrip.appendChild(t);
     });
     refreshChrome();
   }
@@ -3071,21 +3149,24 @@ _JS = r"""
         }
       });
       $$('.section',sh).forEach(function(sec){
+        /* a section hidden via its eye is a manual state, kept out of the
+           filter-driven fold so its (dimmed) sidebar row survives to restore */
+        var secOff=sec.classList.contains('sec-off');
         var cards=$$('.card',sec);
         /* doc: an empty section header (all its cards hidden) folds away */
         var allGone=cards.length>0&&cards.every(function(c){
           return c.classList.contains('is-hidden');});
-        sec.classList.toggle('is-hidden',allGone);
+        sec.classList.toggle('is-hidden',allGone&&!secOff);
         var sid=sec.dataset.sec;
         var row=sh.querySelector('.navsec-row[data-sec="'+sid+'"]');
         var items=sh.querySelector('.navitems[data-sec="'+sid+'"]');
         /* nav: the section vanishes only if EVERY item is filtered out —
-           manually-hidden cells keep their (dimmed) rows so you can restore */
+           manually-hidden cells/sections keep their (dimmed) rows to restore */
         var navs=items?$$('.navitem',items):[];
         var navGone=navs.length>0&&navs.every(function(n){
           return n.classList.contains('nav-hidden');});
-        if(row) row.classList.toggle('nav-hidden',navGone);
-        if(items) items.classList.toggle('nav-hidden',navGone);
+        if(row) row.classList.toggle('nav-hidden',navGone&&!secOff);
+        if(items) items.classList.toggle('nav-hidden',navGone&&!secOff);
       });
     });
     renderTypeButtons();
@@ -3342,14 +3423,15 @@ _JS = r"""
      text:'Every notebook you open is a tab. Drop .ipynb files anywhere on '
        +'the window, or use + Open.'},
     {sel:'#tv-code',title:'Filter what you see',
-     text:'Markdown, Code, Plots and Output each cycle Visible → '
+     text:'Plots, Markdown, Code and Output each cycle Visible → '
        +'Collapsed → Hidden. Code folds the source in EVERY cell at once.'},
     {sel:'#ot-filter-btn',title:'Fine-tune by type',
      text:'The Code types and Output types menus hide specific kinds — '
        +'imports, plotting, print, dataset, error…'},
     {sel:'.rail .nav',title:'The sidebar',
-     text:'A key at the top, collapsible sections, and an eye beside every '
-       +'cell to hide just that one (it stays here so you can bring it back).'},
+     text:'A key at the top; collapse or hide a whole section (also from its '
+       +'heading in the document), and an eye beside every cell to hide just '
+       +'that one — hidden things stay here so you can bring them back.'},
     {sel:'.plot-trace-btn',title:'Trace a plot',
      text:'Plot trace opens a new tab with just the cells that build a '
        +'plot — its whole lineage — plus a dependency graph. Every filter '
@@ -3627,6 +3709,70 @@ _JS = r"""
           setTimeout(function(){src.classList.remove('target-flash');},1400);}
       });
     });
+    /* ---- section collapse + hide: available in the MAIN view and the sidebar,
+       kept in sync. Collapse folds a section's cards; hide drops the whole
+       section (it stays in the sidebar, dimmed, so you can bring it back).
+       Nav queries no-op on the trace tab (which has no sidebar). ---- */
+    function setSecCollapsed(sid,val){
+      var sec=shell.querySelector('.section[data-sec="'+sid+'"]');
+      var row=shell.querySelector('.navsec-row[data-sec="'+sid+'"]');
+      var items=shell.querySelector('.navitems[data-sec="'+sid+'"]');
+      if(sec) sec.classList.toggle('sec-collapsed',val);
+      if(row) row.classList.toggle('collapsed',val);
+      if(items) items.classList.toggle('nav-collapsed',val);
+      var chevs=shell.querySelectorAll('.sec-chev[data-sec="'+sid+'"],'
+        +'.navsec-row[data-sec="'+sid+'"] .navsec-chev');
+      [].forEach.call(chevs,function(ch){
+        ch.setAttribute('aria-expanded',(!val).toString());});
+    }
+    function setSecOff(sid,val){
+      var sec=shell.querySelector('.section[data-sec="'+sid+'"]');
+      var row=shell.querySelector('.navsec-row[data-sec="'+sid+'"]');
+      if(sec) sec.classList.toggle('sec-off',val);
+      if(row) row.classList.toggle('sec-off',val);
+      applyFilters();   /* keep the sidebar in step (a hidden section stays) */
+    }
+    function isCollapsed(sid){
+      var sec=shell.querySelector('.section[data-sec="'+sid+'"]');
+      return !!(sec&&sec.classList.contains('sec-collapsed'));
+    }
+    $$('.sec-chev',shell).forEach(function(ch){
+      ch.addEventListener('click',function(e){
+        e.preventDefault();e.stopPropagation();
+        setSecCollapsed(ch.dataset.sec,!isCollapsed(ch.dataset.sec));
+      });
+    });
+    $$('.navsec-chev',shell).forEach(function(ch){
+      ch.addEventListener('click',function(e){
+        e.preventDefault();e.stopPropagation();
+        var row=ch.closest('.navsec-row'); if(!row) return;
+        setSecCollapsed(row.dataset.sec,!row.classList.contains('collapsed'));
+      });
+    });
+    /* clicking the section header (not a button) also collapses it */
+    $$('.sectionhead',shell).forEach(function(h){
+      h.addEventListener('click',function(e){
+        if(e.target.closest('button,a')) return;
+        var sec=h.closest('.section'); if(!sec) return;
+        setSecCollapsed(sec.dataset.sec,!sec.classList.contains('sec-collapsed'));
+      });
+    });
+    $$('.sec-eye',shell).forEach(function(b){
+      b.addEventListener('click',function(e){
+        e.preventDefault();e.stopPropagation();
+        setSecOff(b.dataset.sec,true);   /* hide the whole section */
+      });
+    });
+    $$('.navsec-eye',shell).forEach(function(sp){
+      var toggle=function(e){
+        e.preventDefault();e.stopPropagation();
+        var row=sp.closest('.navsec-row'); if(!row) return;
+        setSecOff(row.dataset.sec,!row.classList.contains('sec-off'));
+      };
+      sp.addEventListener('click',toggle);
+      sp.addEventListener('keydown',function(e){
+        if(e.key==='Enter'||e.key===' '||e.key==='Spacebar') toggle(e);});
+    });
     /* ---- a Collapsed markdown note opens when its header is clicked;
        clicking again folds it back ---- */
     $$('.card',shell).forEach(function(c){
@@ -3766,21 +3912,9 @@ _JS = r"""
       rgBtn.setAttribute('aria-expanded',(!c).toString());
       rgBtn.textContent=c?'+':'\u2013';
     });
-    /* ---- collapse a nav section (its items fold away) ---- */
-    $$('.navsec-chev',shell).forEach(function(chev){
-      chev.addEventListener('click',function(e){
-        e.preventDefault();e.stopPropagation();
-        var row=chev.closest('.navsec-row');
-        var items=row&&row.nextElementSibling;
-        var col=row.classList.toggle('collapsed');
-        if(items&&items.classList.contains('navitems'))
-          items.classList.toggle('nav-collapsed',col);
-        chev.setAttribute('aria-expanded',(!col).toString());
-      });
-    });
-    /* ---- per-card behaviours (code toggle, eyes, collapse, fig-fold):
-       shared with the Plot-trace tab so the trace is a true subset of the
-       docs, with every button and filter live ---- */
+    /* ---- per-card + per-section behaviours (code toggle, eyes, collapse,
+       fig-fold, section collapse/hide incl. the nav chevrons): shared with
+       the Plot-trace tab so the trace is a true subset of the docs ---- */
     wireCardBehaviors(shell,stem);
 
     /* ---- register ---- */
@@ -4711,9 +4845,21 @@ body.light .tracetab-head{border-color:#0000000f;}
 body.light .tracetab-t{color:#122029;}
 body.light .tracetab-sub{color:#5a6b76;}
 /* the ◈ badge + tint that marks a Plot-trace tab in the tab strip */
-.tab.tab-trace{border-color:#39a9c055;}
-.tab-trace-ic{color:#5fc3d8;margin-right:5px;font-size:11px;flex:none;}
-.tab.tab-trace.current{background:#39a9c018;}
+/* a Plot-trace SUB-tab: smaller + indented + cyan-tinted so it reads as a
+   child of the notebook tab immediately before it */
+.tab.tab-sub{margin-left:6px;max-width:200px;font-size:12px;
+  padding:0 8px 0 10px;background:#39a9c00f;border-color:#39a9c03d;}
+.tab.tab-sub:hover{background:#39a9c01c;}
+.tab.tab-sub.current{background:#39a9c022;color:#dff3f8;
+  border-color:#39a9c07a;}
+.tab-trace-ic{color:#5fc3d8;margin-right:4px;font-size:12px;flex:none;
+  opacity:.85;}
+.tab.tab-sub .tab-t{max-width:150px;}
+/* a small gap + hook line before a sub-tab hints the parent→child nesting */
+.tab.tab-sub::before{content:"";width:8px;height:1px;background:#39a9c066;
+  margin:0 1px 0 -6px;align-self:center;flex:none;}
+body.light .tab.tab-sub{background:#39a9c012;border-color:#39a9c04d;}
+body.light .tab.tab-sub.current{background:#39a9c026;color:#0b3a44;}
 /* per-plot dependency graph */
 .plotgraph-wrap{margin:0 0 18px;padding:12px 12px 6px;
   background:#0e1824;border:1px solid #ffffff12;border-radius:10px;}
@@ -8247,26 +8393,26 @@ _TEMPLATE = """<!doctype html>
     <button class="menubtn" id="menubtn" aria-label="Toggle sections"
       title="Show or hide the section sidebar (table of contents)">
       <span></span></button>
-    <button class="tab-openbtn" id="tab-open" hidden
-      title="Open notebooks">+ Open</button>
+    <button class="toggle tv" id="tv-plots"
+      title="Plots / figures — the headline of each cell. Click to cycle:
+ Visible -> Collapsed -> Hidden"></button>
     <button class="toggle tv" id="tv-markdown"
       title="Markdown / note cards. Click to cycle: Visible -> Collapsed
  -> Hidden"></button>
     <button class="toggle tv" id="tv-code"
       title="Code — the source in every cell (imports, prints, plotting, …).
  Click to cycle: Visible -> Collapsed -> Hidden"></button>
-    <button class="toggle tv" id="tv-plots"
-      title="Plots / figures. Click to cycle: Visible -> Collapsed
- -> Hidden"></button>
-    <button class="toggle tv" id="tv-output"
-      title="Printed output — tables, values, text results. Click to show
- / hide"></button>
-    <button class="toggle" id="ot-filter-btn"
-      title="Advanced: hide specific OUTPUT types (print, dataset, result,
- error)">Output types &#9662;</button>
     <button class="toggle" id="ck-filter-btn"
       title="Advanced: hide specific CODE cell types (imports, plotting,
  …)">Code types &#9662;</button>
+    <button class="toggle tv" id="tv-output"
+      title="Printed output — the tables, values and text a cell prints.
+ Everything a notebook produces is 'output'; plots are just the one kind
+ pulled out into their own filter (on the left). Click to show / hide"></button>
+    <button class="toggle" id="ot-filter-btn"
+      title="Advanced: hide specific OUTPUT types (print, dataset, result,
+ error)">Output types &#9662;</button>
+    <span class="appbar-div" aria-hidden="true"></span>
     <button class="toggle" id="view-raw"
       title="Toggle between the semantic view and the raw notebook
  (cells in order, directives visible)">Raw notebook</button>
@@ -8282,6 +8428,8 @@ _TEMPLATE = """<!doctype html>
       title="How to use, and everything this tool can do">Help</button>
   </div>
   <div class="tabsrow">
+    <button class="tabrow-open" id="tab-open" hidden
+      title="Open a notebook (.ipynb)">&#43; Open</button>
     <span class="tabs-label">docs</span>
     <div class="tabstrip" id="tabstrip" role="tablist"
       aria-label="Open notebooks"></div>
@@ -9228,8 +9376,23 @@ def _self_test() -> None:
     assert "shell.dataset.src=stem" in out
     # the trace tab shares the docs per-card wiring (true subset, not a widget)
     assert "function wireCardBehaviors" in out and "APP.wireCardBehaviors" in out
+    # a trace tab renders as a SUB-tab nested under its source notebook tab
+    assert "tab-sub" in out and "function makeTab" in out
     # the retired focus-mode machinery is gone
     assert "focusStem" not in out and 'id="focusbar"' not in out
+    # toolbar: content filters, a grouping divider, Open moved to the tab line
+    assert 'class="appbar-div"' in out
+    assert 'class="tabrow-open" id="tab-open"' in out
+    _ap = out.index('id="tv-plots"')          # filter order plots→…→output-types
+    assert (_ap < out.index('id="tv-markdown"') < out.index('id="tv-code"')
+            < out.index('id="ck-filter-btn"') < out.index('id="tv-output"')
+            < out.index('id="ot-filter-btn"'))
+    # sections collapse + hide in the MAIN view (chevron + eye), synced to nav
+    assert 'class="sec-chev"' in out and 'class="sec-eye"' in out
+    assert 'class="navsec-eye"' in out
+    assert ".section.sec-collapsed .card{display:none" in out
+    assert ".section.sec-off{display:none" in out
+    assert "function setSecCollapsed" in out and "function setSecOff" in out
     # the presentation code-trail has its OWN Code-types / Output-types filters
     assert "function traceFilterDropdown" in out and ".vo-step.vo-filtered" in out
     assert "var traceCkHidden" in out and "function applyTraceFilter" in out
