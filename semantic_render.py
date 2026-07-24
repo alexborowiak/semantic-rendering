@@ -1234,6 +1234,17 @@ def _fig_pager(imgs) -> str:
 def render_item(item: Item) -> str:
     badge = _BADGE.get(item.kind, item.kind)
     kclass = _kind_class(item.kind)
+    # a card's FILTER ROLE (what top-bar filter governs it) — distinct from
+    # its output kind. Printed results (dataset/metric/text) are OUTPUT, not
+    # code; only cells that are purely source are "code".
+    if item.is_note:
+        role = "markdown"
+    elif item.kind in ("figure", "diagnostic"):
+        role = "plot"
+    elif item.kind == "code":
+        role = "code"
+    else:
+        role = "output"
     ck_attr = ""
     # EVERY code-bearing cell (anything the Code filter governs — not a figure,
     # not a markdown note) carries data-ck so the advanced type filter can
@@ -1343,7 +1354,8 @@ def render_item(item: Item) -> str:
 
     return (
         f'<article class="card {kclass}" id="card-{item.item_id}" '
-        f'data-kind="{item.kind}" data-node="{item.node_id}"{ck_attr} '
+        f'data-kind="{item.kind}" data-role="{role}" '
+        f'data-node="{item.node_id}"{ck_attr} '
         f'data-note="{"1" if item.is_note else "0"}" '
         f'data-anchor="{html.escape(item.anchor or item.item_id)}" tabindex="-1">'
         f'<header class="cardhead">'
@@ -1805,6 +1817,25 @@ body:not(.light) .docbar-p{color:#8ba0b2;}
 .card.k-note::before{background:var(--amber);}
 .card.k-code::before{background:var(--paper-3);}
 .card.target-flash{border-color:var(--cyan);box-shadow:0 0 0 3px #39a9c033;}
+
+/* a card the Markdown / Code / Plots filter has set to COLLAPSED: only its
+   header shows; click the header to expand it in place, click again to fold */
+.card.collapsed{padding:9px 16px;}
+.card.collapsed>.cardbody,.card.collapsed>.codewrap,.card.collapsed>.caption,
+.card.collapsed>.prov,.card.collapsed>.note-src,.card.collapsed>.htmltoggle{
+  display:none;}
+.card.collapsed>.cardhead{margin-bottom:0;cursor:pointer;}
+.card.collapsed .cardtitle::before{content:"\25b8";margin-right:7px;
+  color:var(--ink-3);display:inline-block;font-size:.85em;
+  transition:transform .2s;}
+.card.collapsed.expanded .cardtitle::before{transform:rotate(90deg);}
+.card.collapsed .cardtitle.echo{display:block;font-size:13px;font-weight:500;
+  color:var(--ink-3);}
+.card.collapsed>.cardhead:hover .cardtitle{color:var(--ink);}
+.card.collapsed.expanded{padding:18px 18px 16px;}
+.card.collapsed.expanded>.cardhead{margin-bottom:12px;}
+.card.collapsed.expanded>.cardbody,.card.collapsed.expanded>.codewrap,
+.card.collapsed.expanded>.caption,.card.collapsed.expanded>.prov{display:block;}
 
 .cardhead{display:flex;align-items:center;gap:10px;margin-bottom:12px;
   padding-left:6px;}
@@ -2835,58 +2866,62 @@ _JS = r"""
     scrim.classList.remove('show');
   });
 
-  /* ---- global show/hide filters (top bar; apply to every tab) ---- */
-  /* figures/markup are 2-state; code cycles through 3 (the button LABEL
-     shows the current state, not the action it performs) */
-  var vis={figs:true,markup:true};
-  var codeState='collapsed';   /* 'visible' | 'collapsed' | 'hidden' */
+  /* ---- global show/hide filters (top bar; apply to every tab) ----
+     one state per ROLE. Markdown / Code / Plots cycle Visible -> Collapsed
+     -> Hidden; Output is Visible / Hidden. The button LABEL shows the
+     current state, not the action. */
+  var mdState='visible',codeState='collapsed',plotState='visible';
+  var outState='visible';                 /* 2-state */
   var CODE_CYCLE=['visible','collapsed','hidden'];
   var CODE_LABEL={visible:'Visible',collapsed:'Collapsed',hidden:'Hidden'};
   var ckHidden={};   /* advanced: code subtypes the user has hidden */
   var CK_TYPES=['imports','function','data','settings',
     'plotting','print','constant','code'];
+  function setTvBtn(id,label,state){
+    var b=$('#'+id); if(!b) return;
+    b.innerHTML='<span class="tdot"></span>'+label+': '+CODE_LABEL[state];
+    b.classList.toggle('off',state==='hidden');
+    b.classList.toggle('half',state==='collapsed');   /* never for Output */
+    b.setAttribute('data-cs',state);
+  }
   function renderTypeButtons(){
-    var fb=$('#tv-figs');
-    if(fb){
-      fb.innerHTML='<span class="tdot"></span>Figures: '
-        +(vis.figs?'Visible':'Hidden');
-      fb.classList.toggle('off',!vis.figs);
-    }
-    var mb=$('#tv-markup');
-    if(mb){
-      mb.innerHTML='<span class="tdot"></span>Markup: '
-        +(vis.markup?'Visible':'Hidden');
-      mb.classList.toggle('off',!vis.markup);
-    }
-    var cb=$('#tv-code');
-    if(cb){
-      cb.innerHTML='<span class="tdot"></span>Code: '+CODE_LABEL[codeState];
-      cb.classList.toggle('off',codeState==='hidden');
-      cb.classList.toggle('half',codeState==='collapsed');
-      cb.setAttribute('data-cs',codeState);
-    }
+    setTvBtn('tv-markdown','Markdown',mdState);
+    setTvBtn('tv-code','Code',codeState);
+    setTvBtn('tv-plots','Plots',plotState);
+    setTvBtn('tv-output','Output',outState);
+  }
+  function roleState(role){
+    return role==='markdown'?mdState:role==='plot'?plotState
+      :role==='output'?outState:codeState;   /* default: code */
   }
   function applyFilters(){
     $$('.nbshell').forEach(function(sh){
       $$('.card',sh).forEach(function(c){
-        var kind=c.dataset.kind,note=c.dataset.note==='1';
-        /* passes the global TYPE filter (figs/markup/code=hidden) */
-        var passes=note?vis.markup
-          :(kind==='figure'||kind==='diagnostic')?vis.figs
-          :(codeState!=='hidden');
-        /* advanced: hide a code cell whose primary type is filtered out */
-        if(passes&&!note&&kind!=='figure'&&kind!=='diagnostic'&&c.dataset.ck){
-          if(ckHidden[c.dataset.ck.split(' ')[0]]) passes=false;
-        }
+        var role=c.dataset.role||'code';
+        var st=roleState(role);
+        /* advanced: an unchecked code TYPE hides that code */
+        var ckOff=!!(c.dataset.ck&&ckHidden[c.dataset.ck.split(' ')[0]]);
+        /* the card is removed by its role filter, or (a pure code card) by an
+           unchecked code type */
+        var filteredOut=st==='hidden'||(role==='code'&&ckOff);
         /* a per-cell eye can hide one cell regardless of the global filter */
         var off=c.classList.contains('cell-off');
-        c.classList.toggle('is-hidden',!(passes&&!off));
+        var gone=filteredOut||off;
+        c.classList.toggle('is-hidden',gone);
+        /* Markdown / Code / Plots can COLLAPSE to the header (click to open) */
+        c.classList.toggle('collapsed',!gone&&st==='collapsed');
+        if(gone||st!=='collapsed') c.classList.remove('expanded');
+        /* the code TUCKED under a plot / output card follows the Code filter
+           (+ its own type); the card itself stays put */
+        var cw=c.querySelector('.codewrap');
+        if(cw&&role!=='code')
+          cw.classList.toggle('code-off',codeState==='hidden'||ckOff);
         var id=c.id.replace(/^card-/,'');
         var nav=sh.querySelector('.navitem[data-item="'+id+'"]');
         if(nav){
           /* filtered out -> gone from the sidebar; manually hidden -> STAYS
              (dimmed, so you can bring it back) */
-          nav.classList.toggle('nav-hidden',!passes);
+          nav.classList.toggle('nav-hidden',filteredOut);
           nav.classList.toggle('cell-off',off);
         }
       });
@@ -2975,24 +3010,22 @@ _JS = r"""
       if(btn) btn.setAttribute('aria-expanded',open?'true':'false');
     });
   }
-  function applyCodeState(root){
-    var open=codeState==='visible',hide=codeState==='hidden';
-    $$('.codewrap',root||document).forEach(function(w){
-      w.classList.toggle('code-off',hide);
-    });
-    setAllCode(open,root);
-  }
-  var fb=$('#tv-figs');
-  if(fb) fb.addEventListener('click',function(){
-    vis.figs=!vis.figs;applyFilters();});
-  var mb=$('#tv-markup');
-  if(mb) mb.addEventListener('click',function(){
-    vis.markup=!vis.markup;applyFilters();});
+  /* fold vs expand every codewrap (data-open). HIDING a codewrap (code-off)
+     is owned by applyFilters — the Code filter + the code-type filter. */
+  function applyCodeState(root){setAllCode(codeState==='visible',root);}
+  function cycle3(s){return CODE_CYCLE[(CODE_CYCLE.indexOf(s)+1)%3];}
+  var mkBtn=$('#tv-markdown');
+  if(mkBtn) mkBtn.addEventListener('click',function(){
+    mdState=cycle3(mdState);applyFilters();});
+  var plBtn=$('#tv-plots');
+  if(plBtn) plBtn.addEventListener('click',function(){
+    plotState=cycle3(plotState);applyFilters();});
+  var opBtn=$('#tv-output');
+  if(opBtn) opBtn.addEventListener('click',function(){
+    outState=outState==='visible'?'hidden':'visible';applyFilters();});
   var cb=$('#tv-code');
   if(cb) cb.addEventListener('click',function(){
-    codeState=CODE_CYCLE[(CODE_CYCLE.indexOf(codeState)+1)%CODE_CYCLE.length];
-    applyFilters();applyCodeState();
-  });
+    codeState=cycle3(codeState);applyFilters();applyCodeState();});
   renderTypeButtons();
 
   /* ---- raw notebook toggle (applies to the ACTIVE tab) ---- */
@@ -3413,6 +3446,15 @@ _JS = r"""
       btn.addEventListener('click',function(e){
         e.preventDefault();e.stopPropagation();
         if(window.SemTrace) window.SemTrace.open(stem,btn.dataset.trace);
+      });
+    });
+    /* ---- a Collapsed card (Markdown/Code/Plots = Collapsed) opens when its
+       header is clicked; clicking again folds it back ---- */
+    $$('.card',shell).forEach(function(c){
+      var head=$('.cardhead',c);
+      if(head) head.addEventListener('click',function(e){
+        if(e.target.closest('button,a')) return;   /* leave eye/trace clicks */
+        if(c.classList.contains('collapsed')) c.classList.toggle('expanded');
       });
     });
 
@@ -7824,13 +7866,18 @@ _TEMPLATE = """<!doctype html>
       <span></span></button>
     <button class="tab-openbtn" id="tab-open" hidden
       title="Open notebooks">+ Open</button>
-    <button class="toggle tv" id="tv-figs"
-      title="Figure cards: click to show / hide"></button>
-    <button class="toggle tv" id="tv-markup"
-      title="Markdown / equation cards: click to show / hide"></button>
+    <button class="toggle tv" id="tv-markdown"
+      title="Markdown / note cards. Click to cycle: Visible -> Collapsed
+ -> Hidden"></button>
     <button class="toggle tv" id="tv-code"
-      title="All code (code cards + the code folded under every figure).
+      title="Code — the source in every cell (imports, prints, plotting, …).
  Click to cycle: Visible -> Collapsed -> Hidden"></button>
+    <button class="toggle tv" id="tv-plots"
+      title="Plots / figures. Click to cycle: Visible -> Collapsed
+ -> Hidden"></button>
+    <button class="toggle tv" id="tv-output"
+      title="Printed output — tables, values, text results. Click to show
+ / hide"></button>
     <button class="toggle" id="ck-filter-btn"
       title="Advanced: hide specific code cell types (imports, plotting,
  …)">Types &#9662;</button>
@@ -8526,7 +8573,7 @@ def _self_test() -> None:
     assert legacy[0]["slides"][0] == {"layout": "halves", "panes": ["a", "b"]}
     assert '"panes": ["clim", "cell:md1"]' in out
     assert 'class="nb-data"' in out and 'id="app-data"' in out
-    assert 'id="presstrip"' in out and 'id="tv-markup"' in out
+    assert 'id="presstrip"' in out and 'id="tv-markdown"' in out
     assert 'id="pr-docs"' in out and 'id="pr-new"' in out
     assert 'id="deck-docs"' in out and 'id="dc-close"' in out
     assert 'id="dc-play"' in out and 'id="film-list"' in out
@@ -8565,8 +8612,13 @@ def _self_test() -> None:
     assert 'id="ck-filter-btn"' in out and 'id="ck-filter-menu"' in out
     # huge printed output is capped + scrollable in the document view
     assert "max-height:min(440px,62vh)" in out
-    # code filter is a 3-state cycle (Visible/Collapsed/Hidden), not on/off
+    # four role filters — Markdown/Code/Plots cycle 3 states, Output toggles;
+    # cards carry data-role so printed output is NOT lumped in with code
     assert "var CODE_CYCLE=['visible','collapsed','hidden']" in out
+    assert 'id="tv-markdown"' in out and 'id="tv-plots"' in out
+    assert 'id="tv-output"' in out and 'id="tv-code"' in out
+    assert 'data-role="output"' in out and 'data-role="code"' in out
+    assert "function roleState" in out and ".card.collapsed" in out
     assert "function applyCodeState" in out and ".codewrap.code-off" in out
     # bare code cells (no output, no toggle) must never be folded to a husk
     assert "w.classList.contains('bare')){w.setAttribute('data-open'" in out
